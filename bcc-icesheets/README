@@ -1,0 +1,72 @@
+********************************************************************************
+
+          BCC: BFS and Coloring Biconnected Components Algorithms
+                      Copyright (2016) Sandia Corporation
+
+Questions?  Contact George M. Slota    (slotag@rpi.edu)
+                    Kamesh Madduri     (madduri@cse.psu.edu)
+
+
+
+To cite, and for descriptions of algorithms, please see:
+
+[1] G. M. Slota and K. Madduri, Simple Biconnectivity Algorithms for Multicore Platforms, in the Proceedings of the IEEE Conference on High Performance Computing (HiPC), 2014.
+
+
+********************************************************************************
+Revision history:
+
+21 Aug 2016
+--substantial refactoring of code and bug fixes
+
+22 Sep 2016
+--initial version
+
+
+********************************************************************************
+To make:
+
+1.) Set CXX in Makefile to your c++ compiler, adjust CXXFLAGS if necessary
+-OpenMP 3.1 support is required for parallel execution (GCC 4.7 or later)
+-No other dependencies needed
+
+2.) $ make
+-This will make 'bcc' executables
+
+
+********************************************************************************
+To run:
+
+$ ./bcc [graphfile] [options]
+
+-[graphfile] is of undirected edge list format, n is number of vertices, m is number of undirected edges, vertex identifiers are 0-indexed. Edges should only be listed once and are mirrored internally. IMPORTANT: the current version assumes only a single connected component of the graph, so preprocessing is likely necessary. 
+
+Example [graphfile]:
+n m
+v0 v1
+v0 v2
+v0 v3
+v1 v2
+v2 v3
+...
+
+[Options]:
+  -b:
+      Run BFS-based BCC algorithm
+  -c:
+      Run coloring-based BCC algorithm
+  -r:
+      Use random root vertex instead of default max degree vert
+  -o [output file]:
+      Write per-edge BCC mappings to output file
+  -m [#]:
+      If processing a very high diameter graph (>65536), use this flag to 
+      increase internal storage structure. Set to an upper bound diameter 
+      estimate.
+  -v:
+      Enable verbose timing output
+  -d:
+      Enable debug output and output of connectivity statistics
+
+
+-By default, only the total execution time is output. Use the verbose flag to view per-subroutine times and the debug flag to view connectivity statistics.
