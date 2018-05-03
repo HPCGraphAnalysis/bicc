@@ -1,5 +1,5 @@
 CXX=g++
-CXXFLAGS = -fopenmp -O3 -Wall
+CXXFLAGS = -fopenmp -O3 -Wall -std=c++11 -g
 LINKFLAGS = -fopenmp -O3 -Wall
 TARGET = bcc
 TOCOMPILE = util.o bcc_bfs.o bcc_color.o bcc.o
