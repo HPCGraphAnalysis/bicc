@@ -165,12 +165,12 @@ void read_edge_mesh(char* filename, int &n, unsigned &m, int &z, int*& srcs, int
     line = line.substr(line.find(" ", line.find_first_not_of(" ")));
     int node4 = atoi(line.c_str()) - 1;
 
-    if(verbose){
+    /*if(verbose){
       printf("%d %d\n",node1, node2);
       printf("%d %d\n",node2, node3);
       printf("%d %d\n",node3, node4);
       printf("%d %d\n",node4, node1);
-    }
+    }*/
 
     srcs[edge_index] = node1;
     dsts[edge_index++] = node2;

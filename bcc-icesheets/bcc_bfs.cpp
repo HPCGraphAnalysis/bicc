@@ -378,7 +378,7 @@ void bcc_bfs_do_final_bfs(graph* g, int root,
   int* queue_next = new int[num_verts];
   int queue_size = 0;  
   int queue_size_next = 0;
-  int* stack = new int[num_verts];
+  int* stack = new int[2*num_verts];
   int stack_back = 0;
   
   double elt, elt2 = 0.0;
