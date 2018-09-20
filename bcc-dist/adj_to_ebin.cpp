@@ -113,6 +113,14 @@ int main(int argc, char** argv)
   long* out_degree_list;
   read_adj(argv[1], n, m, out_array, out_degree_list);
   struct graph g = {n, m, out_array, out_degree_list};
+  
+  for(int i = 0; i < g.n; i++){
+    printf("vertex %d's out edges:\n\t",i);
+    int out_degree = out_degree_list[i+1] - out_degree_list[i];
+    for(int j = out_degree_list[i]; j < out_degree_list[i+1]; j++){
+      printf("%d\n\t",out_array[j]);
+    }
+  }
 
   elt = timer() - elt;
   printf("done: %9.6lf\n", elt);

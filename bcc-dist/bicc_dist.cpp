@@ -59,6 +59,7 @@
 #include "dist_graph.h"
 #include "bfs.h"
 #include "lca.h"
+#include "art_pt_heuristic.h"
 //#include "color-bicc.h"
 //#include "label.h"
 
@@ -94,8 +95,15 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   uint64_t* levels = new uint64_t[g->n_total];
   bicc_bfs_pull(g, comm, q, parents, levels, g->max_degree_vert);
   
-  for(int i = 0; i < g->n_total; i++){
-    if(parents[i] != -1) printf("vertex %d, parent: %d, level: %d\n",i, parents[i], levels[i]);
+  MPI_Barrier(MPI_COMM_WORLD);
+  
+  for(int i = 0; i < g->n_local; i++){
+    int curr_global = g->local_unmap[i];
+    if(parents[i] != -1) printf("vertex %d, parent: %d, level: %d\n",curr_global, parents[i], levels[i]);
+  }
+  for(int i = 0; i < g->n_ghost; i++){
+    int curr = g->n_local + i;
+    printf("vertex %d, parent: %d, level: %d\n",g->ghost_unmap[i], parents[curr], levels[curr]);
   }
   
   if (verbose) {
@@ -113,11 +121,8 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //  printf("vertex %d, highs: %d, high_levels: %d\n",i,highs[i],high_levels[i]);
   //}
 
-  bicc_lca(g, comm, q, parents, levels, highs, high_levels);
-
-  for (int i = 0; i < g->n_total; i++){
-    printf("vertex %d, highs: %d, high_levels: %d\n", i, highs[i], high_levels[i]);
-  }
+  //bicc_lca(g, comm, q, parents, levels, highs, high_levels);
+  art_pt_heuristic(g,comm,q,parents,levels,highs);
 
   if (verbose) {
     elt = timer() - elt;
