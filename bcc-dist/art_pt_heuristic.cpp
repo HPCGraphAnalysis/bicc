@@ -16,7 +16,7 @@
 extern int procid, nprocs;
 extern bool verbose, debug, verify, output;
 
-void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,uint64_t* levels){
+void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,uint64_t* levels, int* visited_edges){
   for(int i = 0; i < g->n_local; i++){
     //go through the local nodes, and look through all connections that are not parent-child
     int out_degree = out_degree(g,i);
@@ -32,20 +32,77 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
         //to prevent multiple traversals for the same edge, only put the entry on if the current node is smaller than its neighbor.
         if(global_current < global_neighbor) {
           //printf("nontree edge found from %d to %d\n",global_current,global_neighbor);
-          q.push(i);
-          q.push(neighbor);
+          //mark this edge as visited
+          for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
+            if(g->out_edges[k] == neighbor){
+              printf("Task %d: marking edge from %d to %d as visited\n",procid,i,g->out_edges[k]);
+              visited_edges[k] = 1;
+            }
+          }
+          for(int k = g->out_degree_list[neighbor]; k < g->out_degree_list[neighbor+1]; k++){
+            if(g->out_edges[k] == i){
+              printf("Task %d: marking edge from %d to %d as visited\n",procid,neighbor,g->out_edges[k]);
+              visited_edges[k] = 1;
+            }
+          }
+          //mark i to parent[i](both ways)
+          int local_parent_i = get_value(g->map, parents[i]);
+          for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
+            if(g->out_edges[k] == local_parent_i){
+              printf("Task %d: marking edge from %d to %d as visited\n",procid,i,g->out_edges[k]);
+              visited_edges[k] = 1;
+            }
+          }
+          for(int k = g->out_degree_list[local_parent_i]; k < g->out_degree_list[local_parent_i+1]; k++){
+            if(g->out_edges[k] == i){
+              printf("Task %d: marking edge from %d to %d as visited\n",procid,local_parent_i,g->out_edges[k]);
+              visited_edges[k] = 1;
+            }
+          }
+          //mark neighbor to parent[neighbor](both ways)
+          int local_parent_neighbor = get_value(g->map, parents[neighbor]);
+          for(int k = g->out_degree_list[neighbor]; k < g->out_degree_list[neighbor+1]; k++){
+            if(g->out_edges[k] == local_parent_neighbor){
+              printf("Task %d: marking edge from %d to %d as visited\n",procid,neighbor,g->out_edges[k]);
+              visited_edges[k] = 1;
+            }
+          }
+          for(int k = g->out_degree_list[local_parent_neighbor]; k < g->out_degree_list[local_parent_neighbor+1]; k++){
+            if(g->out_edges[k] == neighbor){
+              printf("Task %d: marking edge from %d to %d as visited\n",procid,local_parent_neighbor,g->out_edges[k]);
+              visited_edges[k] = 1;
+            }
+          }
+          
+          q.push(global_current);
+          q.push(global_neighbor);
           q.push(levels[i]);
           q.push(levels[neighbor]);
-          q.push(get_value(g->map,parents[i]));
-          q.push(get_value(g->map,parents[neighbor]));
+          q.push(parents[i]);
+          q.push(parents[neighbor]);
+          if(parents[i] < g->n_local){
+            q.push(procid);
+            printf("Task %d: Proc1 = %d\n",procid, procid);
+          } else {
+            q.push(g->ghost_tasks[parents[i] - g->n_local]);
+            printf("Task %d: Proc1 = %d\n",procid, g->ghost_tasks[parents[i]-g->n_local]);
+          }
+          if(parents[neighbor] < g->n_local){
+            q.push(procid);
+            printf("Task %d: Proc2 = %d\n",procid, procid);
+            
+          } else {
+            q.push(g->ghost_tasks[parents[neighbor] - g->n_local]);
+            printf("Task %d: Proc2 = %d\n",procid, g->ghost_tasks[parents[neighbor]-g->n_local]);
+          }
         }
       }
     }
   }
 }
 
-void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &send, uint64_t* parents, uint64_t* levels){
-  int count = 0;
+void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &send, uint64_t* parents, uint64_t* levels, uint64_t* flags, int* visited_edges){
+  //every vertex id is global in this function, when used, we need to translate to local.
   while(!queue.empty()){
     int vertex1 = queue.front();
     queue.pop();
@@ -59,130 +116,101 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
     queue.pop();
     int parent2 = queue.front();
     queue.pop();
-    if(parent1 == parent2) {
-      //if the vertex is ghosted, send it to the owning processor.
-      //also, mark it as an LCA for this processor.
-      if(parent1 >= g->n_local){
-        printf("Task %d sending completed traversal(p1==p2)\n",procid);
-        send.push(vertex1);
-        send.push(vertex2);
-        send.push(level1);
-        send.push(level2);
-        send.push(parent1);
-        send.push(parent2);
-        continue;
-      } else {
-        printf("vertex %d is an LCA\n",g->local_unmap[parent1]);
-        continue;
-      }
-    }
-    if(vertex1 == vertex2){
-      //if the vertex is ghosted, send it to the owning processor.
-      //also, mark it as an LCA for this processor.
-      if(vertex1 >= g->n_local){
-        printf("Task %d sending completed traversal(v1==v2)\n",procid);
-        send.push(vertex1);
-        send.push(vertex2);
-        send.push(level1);
-        send.push(level2);
-        send.push(parent1);
-        send.push(parent2);
-        continue;
-      } else {
-        printf("vertex %d is an LCA\n", g->local_unmap[vertex1]);
-        continue;
-      }
-    }
-    //if(parent1 >= g->n_local) printf("Parent1 is a ghosted vertex\n");
-    //if(parent2 >= g->n_local) printf("Parent2 is a ghosted vertex\n");
-    printf("Task %d: vertex1: %d, vertex2: %d, level1: %d, level2: %d, parent1: %d, parent2: %d\n", procid,vertex1, vertex2,level1,level2,parent1,parent2);
-    //if(vertex1 == 4 && vertex2 == 2) continue;
+    int proc1 = queue.front();
+    queue.pop();
+    int proc2 = queue.front();
+    queue.pop();
     
-    //if(count==2) break;
-    if(level1 > level2){
-      //check out vertex1 and parent1, see if vertex1 is locally owned
-      if(vertex1 < g->n_local){
-        vertex1 = parent1;
-        parent1 = get_value(g->map,parents[vertex1]);
-        level1 = levels[vertex1];
-        queue.push(vertex1);
-        queue.push(vertex2);
-        queue.push(level1);
-        queue.push(level2);
-        queue.push(parent1);
-        queue.push(parent2);
-        //push everything back on the queue
-      } else {
-        //put the entry on the send queue.
-        send.push(vertex1);
-        send.push(vertex2);
-        send.push(level1);
-        send.push(level2);
-        send.push(parent1);
-        send.push(parent2);
+    printf("Task %d: v1: %d, v2: %d, l1: %d, l2: %d, p1: %d, p2: %d, P1: %d, P2: %d\n",procid,vertex1, vertex2, level1, level2, parent1, parent2, proc1, proc2);    
+
+    if(parent1 == parent2){
+      flags[get_value(g->map,parent1)] = 1;
+      printf("vertex %d is an LCA\n",parent1);
+      if(proc1 != procid || proc2 != procid){
+        send.push(vertex1); send.push(vertex2);
+        send.push(level1);  send.push(level2);
+        send.push(parent1); send.push(parent2);
+        send.push(proc1);   send.push(proc2);
       }
-    } else if(level1 < level2){
-      //check out vertex2 and parent2, see if vertex2 is locally owned
-      if(vertex2 < g->n_local){
-        vertex2 = parent2;
-        parent2 = get_value(g->map,parents[vertex2]);
-        level2 = levels[vertex2];
-        queue.push(vertex1);
-        queue.push(vertex2);
-        queue.push(level1);
-        queue.push(level2);
-        queue.push(parent1);
-        queue.push(parent2);
-        //push everything back on the queue
-      } else {
-        //put the entry on the send queue
-        send.push(vertex1);
-        send.push(vertex2);
-        send.push(level1);
-        send.push(level2);
-        send.push(parent1);
-        send.push(parent2);
-        
-      }
-    } else {
-      //see if either vertex1 or vertex2 is locally owned
-      if(vertex1 < g->n_local){
-        vertex1 = parent1;
-        parent1 = get_value(g->map,parents[vertex1]);
-        level1 = levels[vertex1];
-        //push everything back on the queue
-        queue.push(vertex1);
-        queue.push(vertex2);
-        queue.push(level1);
-        queue.push(level2);
-        queue.push(parent1);
-        queue.push(parent2);
-      } else if(vertex2 < g->n_local){
-        vertex2 = parent2;
-        parent2 = get_value(g->map,parents[vertex2]);
-        level2 = levels[vertex2];
-        //push everything back on the queue
-        queue.push(vertex1);
-        queue.push(vertex2);
-        queue.push(level1);
-        queue.push(level2);
-        queue.push(parent1);
-        queue.push(parent2);
-      } else {
-        //put entry on the send queue
-        send.push(vertex1);
-        send.push(vertex2);
-        send.push(level1);
-        send.push(level2);
-        send.push(parent1);
-        send.push(parent2);
-      }
+      continue;
     }
-    count++;
-  }
+    //if the current processor can do work on this entry
+    if((proc1 == procid && level1 >= level2)||(proc2 == procid && level2 >= level1)){
+      //do that work, and put the entry back on the queue.
+      if(level1 >= level2){ //advance the first entry
+        int local_vtx1 = get_value(g->map, vertex1);
+        int local_parent1 = get_value(g->map, parent1);
+	//this local_vtx1 to local_parent1 edge was already marked, mark the new edge as visited
+        //vertex1 should equal parent1 (both are global IDs)
+        vertex1 = parent1;
+        //parent1 should be local_parent1's parent (which is global)
+        parent1 = parents[local_parent1];
+        //if the new parent is ghosted, the owning processor should change.
+        //this is the case so we have consistent edge visitation information
+        // owned vertex => ghosted parent gets marked, ghosted child => owned parent gets marked
+        int local_grandparent = get_value(g->map,parent1);
+        //now, mark this new edge as visited
+        for(int i = g->out_degree_list[local_parent1]; i < g->out_degree_list[local_parent1+1]; i++){
+          if(g->out_edges[i] == local_grandparent){
+            printf("Task %d: marking edge from %d to %d as visited\n",procid,local_parent1, local_grandparent);
+            visited_edges[i] = 1;
+          }
+        }
+        for(int i = g->out_degree_list[local_grandparent]; i< g->out_degree_list[local_grandparent+1]; i++){
+          if(g->out_edges[i] == local_parent1){
+            printf("Task %d: marking edge from %d to %d as visited\n",procid, local_grandparent, local_parent1);
+            visited_edges[i] = 1;
+          }
+        }
+        if(local_grandparent >= g->n_local){
+          proc1 = g->ghost_tasks[local_grandparent - g->n_local];
+        }
+        level1--; 
+      } else { //advance the second entry.
+        int local_vtx2 = get_value(g->map, vertex2);
+        int local_parent2 = get_value(g->map, parent2);
+	//mark the new edge as visited (local_parent2 to local_grandparent)       
+ 
+        //vertex2 should equal parent2 (both are global IDs)
+        vertex2 = parent2;
+        //parent2 should be local_parent2's parent (which is a global ID)
+        parent2 = parents[local_parent2];
+        //if the new parent is ghosted, the owning processor should change
+        int local_grandparent = get_value(g->map, parent2);
+        for(int i = g->out_degree_list[local_parent2]; i < g->out_degree_list[local_parent2 + 1]; i++){
+          if(g->out_edges[i] == local_grandparent){
+            printf("Task %d: marking edge from %d to %d as visited\n",procid, local_parent2, local_grandparent);
+            visited_edges[i] = 1;
+          }
+        }
+        for(int i  = g->out_degree_list[local_grandparent]; i < g->out_degree_list[local_grandparent+1]; i++){
+          if(g->out_edges[i] == local_parent2){
+            printf("Task %d: marking edge from %d to %d as visited\n",procid, local_grandparent, local_parent2);
+            visited_edges[i] = 1;
+          }
+        }
+        
+        if(local_grandparent >= g->n_local){
+          proc2 = g->ghost_tasks[local_grandparent - g->n_local];
+        }
+        level2--;
+      }
+      //put the values back on the queue
+      queue.push(vertex1); queue.push(vertex2);
+      queue.push(level1);  queue.push(level2);
+      queue.push(parent1); queue.push(parent2);
+      queue.push(proc1);   queue.push(proc2);
+    } else {
+      // send the entry to one of the processors.
+      send.push(vertex1); send.push(vertex2);
+      send.push(level1);  send.push(level2);
+      send.push(parent1); send.push(parent2);
+      send.push(proc1);   send.push(proc2);
+    }
+  }  
 }
 
-void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue){
+void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue, int* visited_edges){
   //figure out how many entries are being sent to each processor
   uint64_t* sendbuf = new uint64_t[nprocs];
   for(int i = 0; i < nprocs; i++){
@@ -191,7 +219,7 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue)
   
   std::queue<int> procsqueue;
   
-  for(int i = 0; i < send.size()/6; i++){
+  for(int i = 0; i < send.size()/8; i++){
     int vertex1 = send.front();
     send.pop();
     int vertex2 = send.front();
@@ -204,48 +232,28 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue)
     send.pop();
     int parent2 = send.front();
     send.pop();
-    printf("Task %d sending: vertex1: %d, vertex2: %d, level1: %d, level2: %d, parent1: %d, parent2: %d\n", procid,vertex1, vertex2,level1,level2,parent1,parent2);
+    int proc1 = send.front();
+    send.pop();
+    int proc2 = send.front();
+    send.pop();
+    printf("Task %d sending: vertex1: %d, vertex2: %d, level1: %d, level2: %d, parent1: %d, parent2: %d, proc1: %d, proc2: %d\n", procid,vertex1, vertex2,level1,level2,parent1,parent2,proc1, proc2);
     
-    if(vertex1 == vertex2 || parent1 == parent2){
-      //printf("Task %d attempting to send a completed traversal\n",procid);
-      int sendto = -1;
-      if(vertex1 == vertex2) sendto = g->ghost_tasks[vertex1-g->n_local];
-      else if(parent1 == parent2) sendto = g->ghost_tasks[parent1-g->n_local];
-      sendbuf[sendto]++;
-      procsqueue.push(sendto);
-    }else if(level1 > level2){
-      //vertex1 is a ghost, push the entry over to the owning processor
-      int sendto = g->ghost_tasks[vertex1-g->n_local];
-      sendbuf[sendto]++;
-      procsqueue.push(sendto);
-    } else if(level1 < level2) {
-      //vertex2 is a ghost, push the entry!
-      int sendto = g->ghost_tasks[vertex2-g->n_local];
-      sendbuf[sendto]++;
-      procsqueue.push(sendto);
-    } else {
-      if(vertex1 >= g->n_local){
-        //vertex1 is ghosted
-        int sendto = g->ghost_tasks[vertex1-g->n_local];
-        sendbuf[sendto]++;
-        procsqueue.push(sendto);
-      } else {
-        //this may not ever get reached, I'm not sure...
-        //vertex2 must be ghosted, since vertex1 is not, and this must be sent somewhere.
-        int sendto = g->ghost_tasks[vertex2-g->n_local];
-        sendbuf[sendto]++;
-        procsqueue.push(sendto);
-      }
+    if(proc1 != procid){ //send to proc1
+      sendbuf[proc1]++;
+      procsqueue.push(proc1);
+    } else if(proc2 != procid){ //send to proc2
+      sendbuf[proc2]++;
+      procsqueue.push(proc2);
     }
-    //switch to global IDs
-    send.push(g->local_unmap[vertex1]);
-    send.push(g->local_unmap[vertex2]);
+    
+    send.push(vertex1);
+    send.push(vertex2);
     send.push(level1);
     send.push(level2);
-    if(parent1 < g->n_local) send.push(g->local_unmap[parent1]);
-    else send.push(g->ghost_unmap[parent1-g->n_local]);
-    if(parent2 < g->n_local) send.push(g->local_unmap[parent2]);
-    else send.push(g->ghost_unmap[parent2-g->n_local]);
+    send.push(parent1);
+    send.push(parent2);
+    send.push(proc1);
+    send.push(proc2);
   } 
   printf("Task %d Sendbuf: ",procid);
   for(int i = 0; i < nprocs; i++){
@@ -266,15 +274,15 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue)
   int* rdispls = new int[nprocs];
   rdispls[0] = 0;
   for(int i = 1; i < nprocs; i++){
-    sdispls[i] = sdispls[i-1] + sendbuf[i-1]*6;
-    rdispls[i] = rdispls[i-1] + recvbuf[i-1]*6;
+    sdispls[i] = sdispls[i-1] + sendbuf[i-1]*8;
+    rdispls[i] = rdispls[i-1] + recvbuf[i-1]*8;
   }
   int sendsize = 0;
   int recvsize = 0;
   int* sentcount = new int[nprocs];
   for(int i = 0; i < nprocs; i++){
-    sendsize += sendbuf[i]*6;
-    recvsize += recvbuf[i]*6;
+    sendsize += sendbuf[i]*8;
+    recvsize += recvbuf[i]*8;
     sentcount[i] = 0;
   }
   int* final_sendbuf = new int[sendsize];
@@ -282,7 +290,7 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue)
   while(!send.empty()){
     int proc_to_send = procsqueue.front();
     procsqueue.pop();
-    int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send]*6;
+    int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send]*8;
     sentcount[proc_to_send]++;
     final_sendbuf[sendbufidx++] = send.front();
     send.pop();//vertex1
@@ -296,18 +304,22 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue)
     send.pop();//parent1
     final_sendbuf[sendbufidx++] = send.front();
     send.pop();//parent2
+    final_sendbuf[sendbufidx++] = send.front();
+    send.pop();//proc1
+    final_sendbuf[sendbufidx++] = send.front();
+    send.pop();//proc2
   }
 
   int* sendcounts = new int[nprocs];
   int* recvcounts = new int[nprocs];
   for(int i = 0 ; i < nprocs; i++){
-    sendcounts[i] = sendbuf[i]*6;
-    recvcounts[i] = recvbuf[i]*6;
+    sendcounts[i] = sendbuf[i]*8;
+    recvcounts[i] = recvbuf[i]*8;
   }
   
   printf("Task %d sendbuf: ",procid);
-  for(int i = 0; i < sendsize; i+=6){
-    printf("%d,%d;%d,%d;%d,%d; ",final_sendbuf[i],final_sendbuf[i+1],final_sendbuf[i+2],final_sendbuf[i+3],final_sendbuf[i+4],final_sendbuf[i+5]);
+  for(int i = 0; i < sendsize; i+=8){
+    printf("%d,%d;%d,%d;%d,%d;%d,%d; ",final_sendbuf[i],final_sendbuf[i+1],final_sendbuf[i+2],final_sendbuf[i+3],final_sendbuf[i+4],final_sendbuf[i+5],final_sendbuf[i+6],final_sendbuf[i+7]);
   }
   printf("\n");
   
@@ -332,29 +344,67 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue)
   //calculate displacements and everything else needed for the alltoallv.
   status = MPI_Alltoallv(final_sendbuf, sendcounts, sdispls, MPI_INT, final_recvbuf, recvcounts, rdispls, MPI_INT, MPI_COMM_WORLD);
   
-  for(int i = 0; i < recvsize; i+=6){
+  for(int i = 0; i < recvsize; i+=8){
     uint64_t vtx1 = final_recvbuf[i];
     uint64_t vtx2 = final_recvbuf[i+1];
     uint64_t level1 = final_recvbuf[i+2];
     uint64_t level2 = final_recvbuf[i+3];
     uint64_t parent1 = final_recvbuf[i+4];
     uint64_t parent2 = final_recvbuf[i+5];
-    printf("Task %d received entry: vtx1=%d, vtx2=%d, lvl1=%d, lvl2=%d, prnt1=%d, prnt2=%d\n",procid, vtx1,vtx2,level1,level2,parent1,parent2);
+    uint64_t proc1 = final_recvbuf[i+6];
+    uint64_t proc2 = final_recvbuf[i+7];
+    printf("Task %d received entry: vtx1=%d, vtx2=%d, lvl1=%d, lvl2=%d, prnt1=%d, prnt2=%d, proc1=%d, proc2=%d\n",procid, vtx1,vtx2,level1,level2,parent1,parent2,proc1,proc2);
   }
-  // take the entries in final_recvbuf and translate the global ids to local, and push them on the regular queue.
-  for(int i = 0; i < recvsize; i+=6){
-    int vertex1 = get_value(g->map,final_recvbuf[i]);
-    int vertex2 = get_value(g->map,final_recvbuf[i+1]);
+  // take the entries in final_recvbuf and push them on the regular queue.
+  for(int i = 0; i < recvsize; i+=8){
+    int vertex1 = final_recvbuf[i];
+    int vertex2 = final_recvbuf[i+1];
     int level1 = final_recvbuf[i+2];
     int level2 = final_recvbuf[i+3];
-    int parent1 = get_value(g->map, final_recvbuf[i+4]);
-    int parent2 = get_value(g->map, final_recvbuf[i+5]);
+    int parent1 = final_recvbuf[i+4];
+    int parent2 = final_recvbuf[i+5];
+    int proc1 = final_recvbuf[i+6];
+    int proc2 = final_recvbuf[i+7];
+    
+    //mark the vertex1 to parent1 edges as visited (both ways?)
+    int localvertex1 = get_value(g->map, vertex1);
+    int localparent1 = get_value(g->map, parent1);
+    for(int j = g->out_degree_list[localvertex1]; j < g->out_degree_list[localvertex1+1]; j++){
+      if(g->out_edges[j] == localparent1){
+        printf("Task %d: marking edge from %d to %d\n",procid,localvertex1,g->out_edges[j]);
+        visited_edges[j] = 1;
+      }
+    }
+    for(int j = g->out_degree_list[localparent1]; j < g->out_degree_list[localparent1+1]; j++){
+      if(g->out_edges[j] == localvertex1){
+        printf("Task %d: marking edge from %d to %d\n",procid,localparent1,g->out_edges[j]);
+        visited_edges[j] = 1;
+      }
+    }
+    //mark the vertex2 to parent2 edges as visited
+    int localvertex2 = get_value(g->map, vertex2);
+    int localparent2 = get_value(g->map, parent2);
+    for(int j = g->out_degree_list[localvertex2]; j < g->out_degree_list[localvertex2+1]; j++){
+      if(g->out_edges[j] == localparent2){
+        printf("Task %d: marking edge from %d to %d\n",procid,localvertex2,g->out_edges[j]);
+        visited_edges[j] = 1;
+      }
+    }
+    for(int j = g->out_degree_list[localparent2]; j < g->out_degree_list[localparent2+1]; j++){
+      if(g->out_edges[j] == localvertex2){
+        printf("Task %d: marking edge from %d to %d\n",procid,localparent2,g->out_edges[j]);
+        visited_edges[j] = 1;
+      }
+    }
+
     queue.push(vertex1);
     queue.push(vertex2);
     queue.push(level1); 
     queue.push(level2);
     queue.push(parent1);
     queue.push(parent2);
+    queue.push(proc1);
+    queue.push(proc2);
   }  
 
 }
@@ -363,19 +413,28 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
                       uint64_t* parents, uint64_t* levels, uint64_t* art_pt_flags) {
   //Initialize the queue q->queue with nontree edges.
   std::queue<int> lca_data;
-  init_queue_nontree(g,lca_data,parents,levels);
+  int* visited_edges = new int[g->m_local];
+  init_queue_nontree(g,lca_data,parents,levels,visited_edges);
   printf("Task %d found %d nontree edges\n",procid, lca_data.size()/6);
   //do LCA traversals incrementally, communicating in batches
     //also need to keep track of the edges used in the traversal, to flag both ends of a bridge.
   std::queue<int> send_queue;
   int all_done = 0;
   while(!all_done){
-    lca_traversal(g,lca_data,send_queue,parents,levels);
+    lca_traversal(g,lca_data,send_queue,parents,levels,art_pt_flags,visited_edges);
     printf("Task %d attempting to send %d entries\n",procid,send_queue.size()/6);
-    communicate(g,send_queue,lca_data);
+    communicate(g,send_queue,lca_data,visited_edges);
     int local_done = lca_data.empty() && send_queue.empty();
     MPI_Allreduce(&local_done, &all_done, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   }
-  //store appropriate values in art_pt_flags
-  
+  //any endpoint of an unvisited edge should be marked as a potential articulation point
+  for(int i = 0; i < g->n_local; i++){
+    //printf("Task %d: node %d has degree %d\n",procid, i, g->out_degree_list[i+1]-g->out_degree_list[i]);
+    //else printf("Task %d: node %d has degree %d\n",procid,i,g->ghost_degrees[i-g->n_local+1]-g->ghost_degrees[i-g->n_local]);
+    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      if(visited_edges[j] == 0){
+        printf("Task %d: edge from %d to %d is a bridge\n",procid, i, g->out_edges[j]);
+      }
+    }
+  }
 }
