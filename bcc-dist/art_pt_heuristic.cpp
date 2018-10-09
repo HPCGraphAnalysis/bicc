@@ -82,6 +82,20 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
               }
             }
           }
+        } else {
+          //mark this nontree edge as visited (this is on the processor that doesn't get the entry to start)
+          for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
+            if(g->out_edges[k] == neighbor){
+              visited_edges[k] = 1;
+            }
+          }
+          if(neighbor < g->n_local){
+            for(int k = g->out_degree_list[neighbor]; k < g->out_degree_list[neighbor+1]; k++){
+              if(g->out_edges[k] == i){
+                visited_edges[k] = 1;
+              }
+            }
+          }
         }
       }
     }
@@ -118,7 +132,7 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
           task2 = task1;
           send.push(local_vertex1); send.push(local_vertex2);
           send.push(level1);        send.push(level2);
-          send.push(task1);                  send.push(task2);
+          send.push(task1);         send.push(task2);
         }
         if(task2 != procid){
           printf("Task %d: need to send %d,%d;%d,%d;%d,%d; entry to Task %d\n",procid,local_vertex1,local_vertex2,level1,level2,task2,task2,task2);
@@ -377,6 +391,7 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     int local_done = lca_data.empty() && send_queue.empty();
     MPI_Allreduce(&local_done, &all_done, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   }
+  int bridges = 0;
   //any endpoint of an unvisited edge should be marked as a potential articulation point
   for(int i = 0; i < g->n_local; i++){
     //printf("Task %d: node %d has degree %d\n",procid, i, g->out_degree_list[i+1]-g->out_degree_list[i]);
@@ -386,8 +401,10 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
         int global_j = 0;
         if(g->out_edges[j] < g->n_local) global_j = g->local_unmap[g->out_edges[j]];
         else global_j = g->ghost_unmap[g->out_edges[j] - g->n_local];
+        bridges++;
         printf("Task %d: edge from %d to %d is a bridge\n",procid, g->local_unmap[i], global_j);
       }
     }
   }
+  printf("Task %d: found %d bridges\n",procid, bridges);
 }
