@@ -127,6 +127,7 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
       if(local_vertex1 == local_vertex2){
         //this LCA may be ghosted, send it to the other processor that has it ghosted. 
         printf("Task %d: vertex %d is an LCA\n",procid, local_vertex1);
+        flags[local_vertex1] = 1;
         if(task1 != procid){
           printf("Task %d: need to send %d,%d;%d,%d;%d,%d; entry to Task %d\n",procid,local_vertex1,local_vertex2,level1,level2,task1,task1,task1);
           task2 = task1;
@@ -223,7 +224,7 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
 
 void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue, int* visited_edges){
   //figure out how many entries are being sent to each processor
-  uint64_t* sendbuf = new uint64_t[nprocs];
+  int* sendbuf = new int[nprocs];
   for(int i = 0; i < nprocs; i++){
     sendbuf[i] = 0;
   }
@@ -266,8 +267,10 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
   }
   printf("\n");
   //send the counts using alltoall
-  uint64_t* recvbuf = new uint64_t[nprocs];
-  int status = MPI_Alltoall(sendbuf, nprocs, MPI_INT,recvbuf, nprocs, MPI_INT, MPI_COMM_WORLD);
+  int* recvbuf = new int[nprocs];
+  for(int i = 0; i < nprocs; i++) recvbuf[i] = 0;
+  int status = MPI_Alltoall(sendbuf, 1, MPI_INT,recvbuf, 1, MPI_INT, MPI_COMM_WORLD);
+  printf("Task %d: MPI_Alltoall returned %d\n",procid,status);
   printf("Task %d Recvbuf: ",procid);
   for(int i = 0; i < nprocs; i++){
     printf("%d ",recvbuf[i]);
@@ -394,8 +397,6 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   int bridges = 0;
   //any endpoint of an unvisited edge should be marked as a potential articulation point
   for(int i = 0; i < g->n_local; i++){
-    //printf("Task %d: node %d has degree %d\n",procid, i, g->out_degree_list[i+1]-g->out_degree_list[i]);
-    //else printf("Task %d: node %d has degree %d\n",procid,i,g->ghost_degrees[i-g->n_local+1]-g->ghost_degrees[i-g->n_local]);
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       if(visited_edges[j] == 0){
         int global_j = 0;
@@ -403,6 +404,8 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
         else global_j = g->ghost_unmap[g->out_edges[j] - g->n_local];
         bridges++;
         printf("Task %d: edge from %d to %d is a bridge\n",procid, g->local_unmap[i], global_j);
+        art_pt_flags[i] = 1;
+        art_pt_flags[g->out_edges[j]] = 1;
       }
     }
   }

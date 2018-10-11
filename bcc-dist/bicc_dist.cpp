@@ -116,7 +116,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   uint64_t* highs = new uint64_t[g->n_total];
   uint64_t* high_levels = new uint64_t[g->n_total];
   uint64_t* lows = new uint64_t[g->n_total];
-
+  for(int i = 0; i < g->n_total; i++) highs[i] = 0;
   //for (int i = 0; i < 4; i++){
   //  printf("vertex %d, highs: %d, high_levels: %d\n",i,highs[i],high_levels[i]);
   //}
@@ -124,25 +124,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //bicc_lca(g, comm, q, parents, levels, highs, high_levels);
   art_pt_heuristic(g,comm,q,parents,levels,highs);
   
-  //TEST mark one edge as visited, one direction, to check that the array modifications work
-  //uint64_t out_degree = out_degree(g,0);
-  //if(out_degree > 1){
-    //uint64_t* edge_visited = edge_visited(g, 0);
-    //edge_visited[0] = 1;
-  //}
-  
-  //check what edges were marked as visited
-  //for(int i = 0; i < g->n_total; i++){
-    //uint64_t out_degree = out_degree(g, i);
-    //uint64_t* outs = out_vertices(g,i);
-    //uint64_t* edge_visited = edge_visited(g, i);
-    //for(int j = 0; j < out_degree; j++){
-      //if(edge_visited[j] == 1){
-      //  printf("edge from %d to %u was visited\n", i, outs[j]);
-      //}
-    //}
-  //} 
-
+  for(int i = 0; i < g->n_total; i++){
+    if(highs[i] != 0){
+      printf("Task %d: global vertex %d (local %d) is a potential articulation point\n",procid,g->local_unmap[i],i);
+    }
+  }
  
   if (verbose) {
     elt = timer() - elt;
