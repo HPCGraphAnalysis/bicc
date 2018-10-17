@@ -29,7 +29,8 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
       int global_current = g->local_unmap[i];
       //printf("Checking edge between %d (parent: %d) and %d (parent: %d)\n",global_current,parents[i],global_neighbor,parents[neighbor]);
       if(parents[neighbor] != global_current && parents[i] != global_neighbor){
-        if(global_current < global_neighbor){
+        //if the edge is partly owned by the current processor, the neighbor will be the ghosted vertex
+        if((global_current < global_neighbor) || (neighbor >= g->n_local)){
           if(levels[i] <= levels[neighbor]){
             //if neighbor is owned, this processor gets the entry
             if(neighbor < g->n_local){
@@ -43,19 +44,19 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
               q.push(procid);
               //mark this nontree edge as visited
               //we already know i is a local vertex
-              for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
-                if(g->out_edges[k] == neighbor){
+              
+            }
+            for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
+              if(g->out_edges[k] == neighbor){
+                visited_edges[k] = 1;
+              }
+            }
+            if(neighbor < g->n_local){
+              for(int k = g->out_degree_list[neighbor]; k < g->out_degree_list[neighbor+1]; k++){
+                if(g->out_edges[k] == i){
                   visited_edges[k] = 1;
                 }
               }
-              if(neighbor < g->n_local){
-                for(int k = g->out_degree_list[neighbor]; k < g->out_degree_list[neighbor+1]; k++){
-                  if(g->out_edges[k] == i){
-                    visited_edges[k] = 1;
-                  }
-                }
-              }
-              
             }
           } else {
             //we already know i is owned, i goes from 0 to g->n_local
@@ -71,12 +72,26 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
             //we already know i is a local vertex
             for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
               if(g->out_edges[k] == neighbor){
+                if(procid == 1){
+                  int from = g->local_unmap[i];
+                  int to = 0;
+                  if(neighbor < g->n_local) to = g->local_unmap[neighbor];
+                  else to = g->ghost_unmap[neighbor];
+                  printf("Task 1 marked edge from %d to %d as visited\n",from,to);
+                }
                 visited_edges[k] = 1;
               }
             }
             if(neighbor < g->n_local){
               for(int k = g->out_degree_list[neighbor]; k < g->out_degree_list[neighbor+1]; k++){
                 if(g->out_edges[k] == i){
+                  if(procid == 1){
+                    int from = g->local_unmap[i];
+                    int to = 0;
+                    if(neighbor < g->n_local) to = g->local_unmap[neighbor];
+                    else to = g->ghost_unmap[neighbor];
+                    printf("Task 1 marked edge from %d to %d as visited\n",from,to);
+                  }
                   visited_edges[k] = 1;
                 }
               }
@@ -84,7 +99,7 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
           }
         } else {
           //mark this nontree edge as visited (this is on the processor that doesn't get the entry to start)
-          for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
+          /*for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
             if(g->out_edges[k] == neighbor){
               visited_edges[k] = 1;
             }
@@ -95,7 +110,7 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
                 visited_edges[k] = 1;
               }
             }
-          }
+          }*/
         }
       }
     }
@@ -156,6 +171,9 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
           //we can mark the edge from vertex1 to parents[vertex1] as visited safely
           for(int i = g->out_degree_list[local_vertex1]; i < g->out_degree_list[local_vertex1+1]; i++){
             if(local_parent1 == g->out_edges[i]){
+              if(procid==1){
+                printf("Task 1 marking edge from %d to %d as visited\n",vertex1,parents[local_vertex1]);
+              }
               visited_edges[i] = 1;
             }
           }
@@ -164,6 +182,9 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
           //we can mark the edge from parents[vertex1] to vertex1 as visited safely
           for(int i = g->out_degree_list[local_parent1]; i < g->out_degree_list[local_parent1+1]; i++){
             if(local_vertex1 == g->out_edges[i]){
+              if(procid==1){
+                printf("Task 1 marking edge from %d to %d as visited\n",parents[local_vertex1],vertex1);
+              }
               visited_edges[i] = 1;
             }
           }
@@ -188,6 +209,9 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
         if(local_vertex2 < g->n_local){
           for(int i = g->out_degree_list[local_vertex2]; i < g->out_degree_list[local_vertex2+1]; i++){
             if(local_parent2 == g->out_edges[i]){
+              if(procid==1){
+                printf("Task 1 marking edge from %d to %d as visited\n",vertex2,parents[local_vertex2]);
+              }
               visited_edges[i] = 1;
             }
           }
@@ -195,6 +219,9 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
         if(local_parent2 < g->n_local){
           for(int i = g->out_degree_list[local_parent2]; i < g->out_degree_list[local_parent2+1]; i++){
             if(local_vertex2 == g->out_edges[i]){
+              if(procid==1){
+                printf("Task 1 marking edge from %d to %d as visited\n",parents[local_vertex2],vertex2);
+              }
               visited_edges[i] = 1;
             }
           }
@@ -381,6 +408,7 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   //Initialize the queue q->queue with nontree edges.
   std::queue<int> lca_data;
   int* visited_edges = new int[g->m_local];
+  for(int i = 0; i < g->m_local; i++) visited_edges[i] = 0;
   init_queue_nontree(g,lca_data,parents,levels,visited_edges);
   printf("Task %d found %d nontree edges\n",procid, lca_data.size()/6);
   //do LCA traversals incrementally, communicating in batches
