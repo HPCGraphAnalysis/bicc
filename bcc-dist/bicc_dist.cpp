@@ -60,6 +60,7 @@
 #include "bfs.h"
 #include "lca.h"
 #include "art_pt_heuristic.h"
+#include "label_prop.h"
 //#include "color-bicc.h"
 //#include "label.h"
 
@@ -91,6 +92,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("Doing BCC-Color BFS stage\n");
   }
 
+  for(int i = 0; i < g->n_total; i++){
+    int out_degree = out_degree(g, i);
+    uint64_t* outs = out_vertices(g, i);
+    printf("%d's neighbors:\n",i);
+    for(int j = 0; j < out_degree; j++){
+      printf("\t%d\n",outs[j]);
+    }
+  }
   uint64_t* parents = new uint64_t[g->n_total];
   uint64_t* levels = new uint64_t[g->n_total];
   bicc_bfs_pull(g, comm, q, parents, levels, g->max_degree_vert);
@@ -99,7 +108,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   for(int i = 0; i < g->n_local; i++){
     int curr_global = g->local_unmap[i];
-    if(parents[i] != -1) printf("vertex %d, parent: %d, level: %d\n",curr_global, parents[i], levels[i]);
+    printf("vertex %d, parent: %d, level: %d\n",curr_global, parents[i], levels[i]);
   }
   for(int i = 0; i < g->n_ghost; i++){
     int curr = g->n_local + i;
@@ -113,23 +122,40 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("Doing BCC-LCA stage\n");
   }
 
-  uint64_t* highs = new uint64_t[g->n_total];
-  uint64_t* high_levels = new uint64_t[g->n_total];
-  uint64_t* lows = new uint64_t[g->n_total];
-  for(int i = 0; i < g->n_total; i++) highs[i] = 0;
-  //for (int i = 0; i < 4; i++){
-  //  printf("vertex %d, highs: %d, high_levels: %d\n",i,highs[i],high_levels[i]);
-  //}
-
-  //bicc_lca(g, comm, q, parents, levels, highs, high_levels);
-  art_pt_heuristic(g,comm,q,parents,levels,highs);
+  uint64_t* potential_art_pts = new uint64_t[g->n_total];
+  
+  
+  for(int i = 0; i < g->n_total; i++) potential_art_pts[i] = 0;
+  
+  art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
   
   for(int i = 0; i < g->n_total; i++){
-    if(highs[i] != 0){
+    if(potential_art_pts[i] != 0 && i < g->n_local){
+      int vertex =0;
       printf("Task %d: global vertex %d (local %d) is a potential articulation point\n",procid,g->local_unmap[i],i);
     }
   }
- 
+  
+   
+  int** labels = new int*[g->n_total];
+  for(int i = 0; i < g->n_total; i++){
+    labels[i] = new int[5];
+    labels[i][0] = -1;
+    labels[i][1] = -1;
+    labels[i][2] = -1;
+    labels[i][3] = -1;
+    labels[i][4] = -1;
+  }
+  
+  bcc_bfs_prop_driver(g,potential_art_pts,labels);
+  
+  for(int i = 0; i< g->n_total; i++){
+    int gid = 0;
+    if(i < g->n_local) gid = g->local_unmap[i];
+    else gid = g->ghost_unmap[i-g->n_local];
+    printf("task %d: vertex %d: %d, %d; %d, %d; %d\n", procid, gid, labels[i][0], labels[i][1],labels[i][2],labels[i][3], labels[i][4]);
+  }  
+
   if (verbose) {
     elt = timer() - elt;
     printf("\tDone: %9.6lf\n", elt);
@@ -139,9 +165,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
 
   delete [] parents;
   delete [] levels;
-  delete [] high_levels;
-  delete [] highs;
-  delete [] lows;
+  delete [] potential_art_pts;
 
   return 0;
 }
