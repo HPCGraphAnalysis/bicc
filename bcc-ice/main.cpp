@@ -9,6 +9,8 @@
 #include "dist_graph.h"
 #include "bicc_dist.h"
 #include "label_prop.h"
+#include "comms.h"
+#include "io_pp.h"
 
 void read_edge_mesh(char* filename, int &n, unsigned &m, int*& srcs, int*& dsts, int*& grounded_flags, int ground_sensitivity){
   std::ifstream infile;
@@ -300,33 +302,81 @@ int main(int argc, char** argv){
       localBoundaries[newId[i]] = boundary_flags[i];
     }
   }
-  
+   
   //create gids for unmapping
   uint64_t* gids = new uint64_t[n_local + numcopies];
   for(int i = 0; i < n; i++){
     if(newId[i] > -1){
       gids[newId[i]] = i;
-      std::cout<<"Task "<<procid<<" local "<<newId[i]<<" is global "<<i<<"\n";
+      //std::cout<<"Task "<<procid<<" local "<<newId[i]<<" is global "<<i<<"\n";
     }
   }
  
   
    
-  int* out_array;
+  /*int* out_array;
   unsigned* out_degree_list;
   int max_degree_vert;
   double avg_out_degree;
   create_csr(new_id_counter,localEdgeCounter, localSrcs,localDsts,out_array, out_degree_list, max_degree_vert, avg_out_degree);
-   
+  
   for(int i = 0; i < n_local; i ++){
     for(int j = out_degree_list[i]; j < out_degree_list[i+1]; j++){
       std::cout<<"Task "<<procid<<": "<< i <<" - "<<out_array[j]<<"\n";
     }
+  }*/
+  std::cout<<"Task "<<procid<<"'s local graph\n";
+  for(int i =0; i < localEdgeCounter; i++){
+    //std::cout<<"Task "<<procid<<": "<<localSrcs[i]<<" - "<<localDsts[i]<<"\n";
   }
-   
-  dist_graph_t* g = new dist_graph_t;
   
-  uint64_t* local_offsets = new uint64_t[n_local+1];
+  
+    
+  mpi_data_t comm;
+  init_comm_data(&comm);
+  
+  graph_gen_data_t* ggi  = new graph_gen_data_t;
+  std::cout<<"Creating graph gen datatype\n"; 
+  ggi->n = n;
+  ggi->m = m;
+  ggi->n_local = n_local;
+  ggi->n_offset = local_offset;// - (local_offset > 0);
+  ggi->m_local_read = localEdgeCounter;
+  ggi->m_local_edges = localEdgeCounter;
+  ggi->gen_edges = new uint64_t[localEdgeCounter*2];
+  std::cout<<"Assigning values to gen_edges\n";
+  
+  int edgeCounter =0;
+  for(int i = 0; i < m; i++){
+    if(srcs[i] >= local_offset && srcs[i] < local_offset+n_local){
+      std::cout<<"Task "<<procid<<": "<<srcs[i]<<" is between "<<local_offset<<" and "<<local_offset+n_local<<"\n";
+      ggi->gen_edges[2*edgeCounter] = srcs[i];
+      ggi->gen_edges[2*edgeCounter + 1] = dsts[i];
+      edgeCounter++;
+    } else {
+      std::cout<<"Task "<<procid<<": "<<srcs[i]<<" is not between "<<local_offset<<" and "<<local_offset+n_local<<"\n";
+    }
+    //ggi->gen_edges[2*i] = gids[localSrcs[i]];
+    //ggi->gen_edges[2*i + 1] = gids[localDsts[i]];
+  }
+  ggi->m_local_read = edgeCounter;
+  ggi->m_local_edges = edgeCounter;
+  
+  std::cout<<"Task "<<procid<<"'s Gen_edges\n";
+  for(int i = 0; i < edgeCounter; i++){
+    std::cout<<"Task "<<procid<<": "<<ggi->gen_edges[2*i]<<" - "<<ggi->gen_edges[2*i+1]<<"\n";
+  }
+ 
+  exchange_edges(ggi,&comm);
+  
+  std::cout<<"finished assigning edges, building graph\n";
+  dist_graph_t cg;
+  dist_graph_t* g = &cg;
+  std::cout<<"Calling create_graph\n";
+  create_graph(ggi,&cg);
+  std::cout<<"Finished creating graph, relabeling edges...\n";
+  
+  /*uint64_t* local_offsets = new uint64_t[n_local+1];
   uint64_t* local_adjs = new uint64_t[localEdgeCounter];
   
   for(int i = 0; i < n_local+1; i++){
@@ -337,8 +387,8 @@ int main(int argc, char** argv){
     local_adjs[i] = out_array[i];
   }
   
-  create_graph(g, n, m, n_local, localEdgeCounter, local_offsets, local_adjs, gids);
-  std::cout<<"Task "<<procid<<" BEFORE RELABELING\n"; 
+  create_graph(g, n, m, n_local, localEdgeCounter, local_offsets, local_adjs, gids);*/
+  /*std::cout<<"Task "<<procid<<" BEFORE RELABELING\n"; 
   for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g,i);
     uint64_t* outs = out_vertices(g,i);
@@ -347,7 +397,7 @@ int main(int argc, char** argv){
       //if(outs[j] >= g->n_local) neighbor = g->ghost_unmap[outs[j]-g->n_local];
       std::cout<<"Task "<<procid<<": "<<g->local_unmap[i]<<" - "<<neighbor<<"\n";
     }
-  }
+  }*/
   relabel_edges(g);
   std::cout<<"AFTER RELABELING\n";
   for(int i = 0; i < g->n_local; i++){
@@ -370,12 +420,13 @@ int main(int argc, char** argv){
     labels[i][3] = -1;
     labels[i][4] = -1;
   }
+  std::cout<<"Task "<<procid<<": done creating labels\n";
   std::queue<int> reg_frontier;
   std::queue<int> art_frontier;
   //set labels for grounded nodes.
   for(int i = 0; i < n_local; i++){
     if(localGrounding[i]){
-      std::cout<<"Task "<<procid<<": grounding vtx "<<i<<"\n";
+      //std::cout<<"Task "<<procid<<": grounding vtx "<<i<<"\n";
       labels[i][0] = g->local_unmap[i];
       labels[i][1] = g->local_unmap[i];
       if(localBoundaries[i]){

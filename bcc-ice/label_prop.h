@@ -84,6 +84,8 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
     int bcc_name = recvbuf[exchangeidx++];
     Grounding_Status copy_gs = (Grounding_Status)((first != -1)+(second!=-1));
     Grounding_Status owned_gs = get_grounding_status(labels[lid]);
+    //printf("Task %d: sentvtx %d: (%d, %d), (%d, %d), gs: %d\n",procid,gid,first,first_sender,second,second_sender,copy_gs);
+    //printf("Task %d: ownedvtx %d: (%d, %d), (%d, %d), gs: %d\n",procid,g->local_unmap[lid],labels[lid][FIRST],labels[lid][FIRST_SENDER],labels[lid][SECOND],labels[lid][SECOND_SENDER],owned_gs);
     if(owned_gs < copy_gs){
       labels[lid][FIRST] = first;
       labels[lid][FIRST_SENDER] = first_sender;
@@ -92,8 +94,8 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
       labels[lid][BCC_NAME] = bcc_name;
     } else if(owned_gs == copy_gs && owned_gs == HALF){
       if(first != labels[lid][FIRST]){
-        labels[lid][SECOND] = second;
-        labels[lid][SECOND_SENDER] = second_sender;
+        labels[lid][SECOND] = first;
+        labels[lid][SECOND_SENDER] = first_sender;
         labels[lid][BCC_NAME] = bcc_name;//not sure if this actually changes anything (will be -1?)
       }
     }
@@ -102,6 +104,7 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
       else reg.push(lid);
     }
   }
+
   //at this point, the owned vertices are all up to date, need to send them back.
   //recvbuf contains ghosts from each processor, ordered by the processor.
   //if we overwrite the labels with the owned version's labels, we can use the recvbuf as the sendbuf, 
@@ -124,7 +127,7 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
     //update the ghosts on the current processor
     int gid = sendbuf[updateidx++];
     int lid = get_value(g->map,gid);
-    int first = recvbuf[updateidx++];
+    /*int first = recvbuf[updateidx++];
     int first_sender = recvbuf[updateidx++];
     int second = recvbuf[updateidx++];
     int second_sender = recvbuf[updateidx++];
@@ -144,7 +147,13 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
         labels[lid][SECOND_SENDER] = second_sender;
         labels[lid][BCC_NAME] = bcc_name;
       }
-    }
+    }*/
+    Grounding_Status local_gs = get_grounding_status(labels[lid]);
+    labels[lid][FIRST] = sendbuf[updateidx++];
+    labels[lid][FIRST_SENDER] = sendbuf[updateidx++];
+    labels[lid][SECOND] = sendbuf[updateidx++];
+    labels[lid][SECOND_SENDER] = sendbuf[updateidx++];
+    labels[lid][BCC_NAME] = sendbuf[updateidx++];
 
     if(get_grounding_status(labels[lid]) != local_gs){
       if(potential_artpts[lid])art.push(lid);
@@ -155,9 +164,10 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
 }
 
 //pass labels between two neighboring vertices
-void give_labels(int curr_node, int neighbor, int** labels, bool curr_is_art){
+void give_labels(dist_graph_t* g,int curr_node, int neighbor, int** labels, bool curr_is_art){
   Grounding_Status curr_gs = get_grounding_status(labels[curr_node]);
   Grounding_Status nbor_gs = get_grounding_status(labels[neighbor]);
+  int curr_node_gid = g->local_unmap[curr_node];
   //if the neighbor is full, we don't need to pass labels
   if(nbor_gs == FULL) return;
   //if the current node is empty (shouldn't happen) we can't pass any labels
@@ -165,22 +175,22 @@ void give_labels(int curr_node, int neighbor, int** labels, bool curr_is_art){
   //if the current node is full (and not an articulation point), pass both labels on
   if(curr_gs == FULL && !curr_is_art){
     labels[neighbor][FIRST] = labels[curr_node][FIRST];
-    labels[neighbor][FIRST_SENDER] = curr_node;
+    labels[neighbor][FIRST_SENDER] = curr_node_gid;
     labels[neighbor][SECOND] = labels[curr_node][SECOND];
-    labels[neighbor][SECOND_SENDER] = curr_node;
+    labels[neighbor][SECOND_SENDER] = curr_node_gid;
     labels[neighbor][BCC_NAME] = labels[curr_node][BCC_NAME];
     return;
   } else if (curr_gs == FULL){
     //if it is an articulation point, and it hasn't sent to this neighbor
-    if(labels[neighbor][FIRST_SENDER] != curr_node){
+    if(labels[neighbor][FIRST_SENDER] != curr_node_gid){
       //send itself as a label
       if(nbor_gs == NONE){
-        labels[neighbor][FIRST] = curr_node;
-        labels[neighbor][FIRST_SENDER] = curr_node;
+        labels[neighbor][FIRST] = curr_node_gid;
+        labels[neighbor][FIRST_SENDER] = curr_node_gid;
       } else if (nbor_gs == HALF){
-        if(labels[neighbor][FIRST] != curr_node){
-          labels[neighbor][SECOND] = curr_node;
-          labels[neighbor][SECOND_SENDER] = curr_node;
+        if(labels[neighbor][FIRST] != curr_node_gid){
+          labels[neighbor][SECOND] = curr_node_gid;
+          labels[neighbor][SECOND_SENDER] = curr_node_gid;
         }
       }
     }
@@ -191,14 +201,14 @@ void give_labels(int curr_node, int neighbor, int** labels, bool curr_is_art){
     //pass that on appropriately
     if(nbor_gs == NONE){
       labels[neighbor][FIRST] = labels[curr_node][FIRST];
-      labels[neighbor][FIRST_SENDER] = curr_node;
+      labels[neighbor][FIRST_SENDER] = curr_node_gid;
       labels[neighbor][BCC_NAME] = labels[curr_node][BCC_NAME];
     } else if(nbor_gs == HALF){
       //make sure you aren't giving a duplicate label,
       //and that you haven't sent a label to this neighbor before
-      if(labels[neighbor][FIRST] != labels[curr_node][FIRST] && labels[neighbor][FIRST_SENDER] != curr_node){
+      if(labels[neighbor][FIRST] != labels[curr_node][FIRST] && labels[neighbor][FIRST_SENDER] != curr_node_gid){
         labels[neighbor][SECOND] = labels[curr_node][FIRST];
-        labels[neighbor][SECOND_SENDER] = curr_node;
+        labels[neighbor][SECOND_SENDER] = curr_node_gid;
         labels[neighbor][BCC_NAME] = labels[curr_node][BCC_NAME];
       }
     }
@@ -228,7 +238,7 @@ void bfs_prop(dist_graph_t *g, std::queue<int>& reg_frontier,std::queue<int>& ar
         
         //printf("task %d: starting give labels\n",procid); 
         //give curr_node's neighbor some more labels
-        give_labels(curr_node, neighbor, labels, potential_artpts[curr_node] >= 1);
+        give_labels(g,curr_node, neighbor, labels, potential_artpts[curr_node] >= 1);
         //printf("task %d: ending give labels\n",procid);
         
         if(old_gs != get_grounding_status(labels[neighbor])){
@@ -267,7 +277,7 @@ void bfs_prop(dist_graph_t *g, std::queue<int>& reg_frontier,std::queue<int>& ar
 
 int* propagate(dist_graph_t *g, std::queue<int>&reg_frontier,std::queue<int>&art_frontier,int**labels,uint64_t*potential_artpts){
   //propagate initially
-  printf("task %d: initiating propagation\n",procid);
+  //printf("task %d: initiating propagation\n",procid);
   bfs_prop(g,reg_frontier,art_frontier,labels,potential_artpts);
   for(int i = 0; i < g->n_total; i++){
     int gid = g->local_unmap[i];
@@ -335,7 +345,7 @@ int** bcc_bfs_prop_driver(dist_graph_t *g, uint64_t* potential_artpts, int**labe
   
   //while there are empty vertices
   while(!done){
-    printf("task %d: initial grounding\n",procid);
+    //printf("task %d: initial grounding\n",procid);
     //see how many articulation points all processors know about
     int globalArtPtCount = 0;
     int localArtPtCount = art_queue.size();
