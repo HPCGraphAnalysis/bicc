@@ -241,6 +241,10 @@ int main(int argc, char** argv){
   //simple block partitioning
   n_local = n/np + (procid < (n%np));
   int local_offset = std::min(procid,n%np)*(n/np + 1) + std::max(0, procid - (n%np))*(n/np);
+  int* proc_offsets = new int[np];
+  for(int i = 0; i < np; i++){
+    proc_offsets[i] = std::min(i,n%np)*(n/np + 1) + std::max(0, i - (n%np))*(n/np);
+  }
   
   std::cout<<procid<<": vertices go from "<<local_offset<<" to "<<local_offset+n_local-1<<"\n";
    
@@ -314,7 +318,7 @@ int main(int argc, char** argv){
  
   
    
-  /*int* out_array;
+  int* out_array;
   unsigned* out_degree_list;
   int max_degree_vert;
   double avg_out_degree;
@@ -322,17 +326,68 @@ int main(int argc, char** argv){
   
   for(int i = 0; i < n_local; i ++){
     for(int j = out_degree_list[i]; j < out_degree_list[i+1]; j++){
-      std::cout<<"Task "<<procid<<": "<< i <<" - "<<out_array[j]<<"\n";
+      std::cout<<"Task "<<procid<<": "<< gids[i] <<" - "<<gids[out_array[j]]<<"\n";
     }
-  }*/
+  }
   std::cout<<"Task "<<procid<<"'s local graph\n";
   for(int i =0; i < localEdgeCounter; i++){
     //std::cout<<"Task "<<procid<<": "<<localSrcs[i]<<" - "<<localDsts[i]<<"\n";
   }
+  uint64_t* local_offsets = new uint64_t[n_local+1];
+  uint64_t* local_adjs = new uint64_t[localEdgeCounter];
+  uint64_t* local_unmap = new uint64_t[n_local];
+  uint64_t* ghost_unmap = new uint64_t[numcopies];
+  uint64_t* ghost_tasks = new uint64_t[numcopies];
+  
+  for(int i = 0; i < n_local+1; i++){
+    local_offsets[i] = out_degree_list[i];
+  }
+  
+  for(int i = 0; i < localEdgeCounter; i++){
+    local_adjs[i] = out_array[i];
+  }
+  
+  for(int i = 0; i < n_local; i++){
+    local_unmap[i] = gids[i];
+  }  
+  
+  for(int i = 0; i < numcopies; i++){
+    ghost_unmap[i] = gids[n_local+i];
+    bool tasked = false;
+    for(int j = 0; j < np; j++){
+      if(ghost_unmap[i] < proc_offsets[j]){
+        ghost_tasks[i] = j-1;
+        tasked = true;
+      }
+    }
+    if(tasked == false){
+      ghost_tasks[i] = np-1;
+    }
+  }
   
   
+  
+  dist_graph_t g;
+  g.n = n;
+  g.m = m;
+  g.m_local = localEdgeCounter;
+  g.n_local = n_local;
+  g.n_offset = local_offset;
+  g.n_ghost = numcopies;
+  g.n_total = n_local + numcopies;
+  g.out_edges = local_adjs;
+  g.out_degree_list = local_offsets;
+  g.local_unmap = local_unmap;
+  g.ghost_unmap = ghost_unmap;
+  g.map = (struct fast_map*)malloc(sizeof(struct fast_map));
+  init_map(g.map, (n_local+localEdgeCounter)*2);
+  for(uint64_t i = 0; i < n_local + numcopies; i++){
+    uint64_t vert = gids[i];
+    set_value(g.map, vert, i);
+    get_value(g.map,vert);
+  }
     
-  mpi_data_t comm;
+  /*mpi_data_t comm;
   init_comm_data(&comm);
   
   graph_gen_data_t* ggi  = new graph_gen_data_t;
@@ -374,21 +429,11 @@ int main(int argc, char** argv){
   dist_graph_t* g = &cg;
   std::cout<<"Calling create_graph\n";
   create_graph(ggi,&cg);
-  std::cout<<"Finished creating graph, relabeling edges...\n";
+  std::cout<<"Finished creating graph, relabeling edges...\n";*/
   
-  /*uint64_t* local_offsets = new uint64_t[n_local+1];
-  uint64_t* local_adjs = new uint64_t[localEdgeCounter];
   
-  for(int i = 0; i < n_local+1; i++){
-    local_offsets[i] = out_degree_list[i];
-  }
-  
-  for(int i = 0; i < localEdgeCounter; i++){
-    local_adjs[i] = out_array[i];
-  }
-  
-  create_graph(g, n, m, n_local, localEdgeCounter, local_offsets, local_adjs, gids);*/
-  /*std::cout<<"Task "<<procid<<" BEFORE RELABELING\n"; 
+  /*create_graph(g, n, m, n_local, localEdgeCounter, local_offsets, local_adjs, gids);
+  std::cout<<"Task "<<procid<<" BEFORE RELABELING\n"; 
   for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g,i);
     uint64_t* outs = out_vertices(g,i);
@@ -398,21 +443,22 @@ int main(int argc, char** argv){
       std::cout<<"Task "<<procid<<": "<<g->local_unmap[i]<<" - "<<neighbor<<"\n";
     }
   }*/
-  relabel_edges(g);
+  //relabel_edges(g);
   std::cout<<"AFTER RELABELING\n";
-  for(int i = 0; i < g->n_local; i++){
-    int out_degree = out_degree(g,i);
-    uint64_t* outs = out_vertices(g,i);
+  dist_graph_t* gp = &g;
+  for(int i = 0; i < gp->n_local; i++){
+    int out_degree = out_degree(gp,i);
+    uint64_t* outs = out_vertices(gp,i);
     for(int j = 0; j < out_degree; j++){
-      int neighbor = g->local_unmap[outs[j]];
-      if(outs[j] >= g->n_local) neighbor = g->ghost_unmap[outs[j]-g->n_local];
-      std::cout<<"Task "<<procid<<": "<<g->local_unmap[i]<<" - "<<neighbor<<"\n";
+      int neighbor = gp->local_unmap[outs[j]];
+      if(outs[j] >= gp->n_local) neighbor = gp->ghost_unmap[outs[j]-gp->n_local];
+      std::cout<<"Task "<<procid<<": "<<gp->local_unmap[i]<<" - "<<neighbor<<"\n";
     }
   }
   
-  std::cout<<"Task "<<procid<<": total vertices = "<<g->n_total<<"\n";
-  int** labels = new int*[g->n_total];
-  for(int i = 0; i < g->n_total; i++){
+  std::cout<<"Task "<<procid<<": total vertices = "<<g.n_total<<"\n";
+  int** labels = new int*[g.n_total];
+  for(int i = 0; i < g.n_total; i++){
     labels[i] = new int[5];
     labels[i][0] = -1;
     labels[i][1] = -1;
@@ -424,11 +470,11 @@ int main(int argc, char** argv){
   std::queue<int> reg_frontier;
   std::queue<int> art_frontier;
   //set labels for grounded nodes.
-  for(int i = 0; i < n_local; i++){
+  for(int i = 0; i < g.n_local; i++){
     if(localGrounding[i]){
       //std::cout<<"Task "<<procid<<": grounding vtx "<<i<<"\n";
-      labels[i][0] = g->local_unmap[i];
-      labels[i][1] = g->local_unmap[i];
+      labels[i][0] = g.local_unmap[i];
+      labels[i][1] = g.local_unmap[i];
       if(localBoundaries[i]){
         art_frontier.push(i);
       }else{ 
@@ -437,11 +483,11 @@ int main(int argc, char** argv){
     }
   }
   
-  int* removed = propagate(g, reg_frontier, art_frontier, labels, localBoundaries);
+  int* removed = propagate(gp, reg_frontier, art_frontier, labels, localBoundaries);
 
-  for(int i = 0; i < g->n_local; i++){
+  for(int i = 0; i < gp->n_local; i++){
     if(removed[i] > -2){
-      std::cout<<procid<<": removed "<<g->local_unmap[i]<<"\n";
+      std::cout<<procid<<": removed "<<gp->local_unmap[i]<<"\n";
     }
   }
   
