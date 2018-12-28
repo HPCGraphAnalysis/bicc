@@ -25,14 +25,16 @@ Grounding_Status get_grounding_status(int* label){
 }
 
 void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue<int>& art,uint64_t* potential_artpts){
-  printf("task %d: Attempting to communicate\n",procid);
+  //printf("task %d: Attempting to communicate\n",procid);
   int* sendcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++){
     sendcnts[i] = 0;
   }
+  //printf("task %d: Accessing g->n_local: %d, g->n_total: %d, and g->ghost_tasks: %x\n",procid, g->n_local,g->n_total,g->ghost_tasks);
   for(int i = g->n_local; i < g->n_total; i++){
     sendcnts[g->ghost_tasks[i-g->n_local]] += 6;
   }
+  //printf("task %d: done creating sendcnts\n",procid);
   int* recvcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
   int status = MPI_Alltoall(sendcnts,1,MPI_INT,recvcnts,1,MPI_INT,MPI_COMM_WORLD);
@@ -160,7 +162,7 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
       else reg.push(lid);
     }
   }
-  printf("task %d: Concluding communication\n",procid); 
+  //printf("task %d: Concluding communication\n",procid); 
 }
 
 //pass labels between two neighboring vertices
@@ -216,7 +218,7 @@ void give_labels(dist_graph_t* g,int curr_node, int neighbor, int** labels, bool
 }
 
 void bfs_prop(dist_graph_t *g, std::queue<int>& reg_frontier,std::queue<int>& art_frontier, int** labels, uint64_t* potential_artpts){
-  printf("task %d: starting propagation sweep\n",procid);
+  //printf("task %d: starting propagation sweep\n",procid);
   int done = 0;
   while(!done){
     std::queue<int>* curr = &reg_frontier;
@@ -253,40 +255,41 @@ void bfs_prop(dist_graph_t *g, std::queue<int>& reg_frontier,std::queue<int>& ar
       }
       
     }
-    printf("Task %d: BEFORE COMMUNICATE\n",procid);
+    //printf("Task %d: BEFORE COMMUNICATE\n",procid);
     for(int i = 0; i < g->n_total; i++){
       int gid = g->local_unmap[i];
       if(i >= g->n_local) gid = g->ghost_unmap[i-g->n_local];
-      printf("Task %d: vtx %d (%d, %d), (%d, %d)\n",procid, gid,labels[i][0],labels[i][1], labels[i][2], labels[i][3]);
+      //printf("Task %d: vtx %d (%d, %d), (%d, %d)\n",procid, gid,labels[i][0],labels[i][1], labels[i][2], labels[i][3]);
     }
     //communicate from owned to ghosts and back
     communicate(g,labels, reg_frontier,art_frontier,potential_artpts);
-    printf("Task %d: AFTER COMMUNICATE\n",procid);
+    //printf("Task %d: AFTER COMMUNICATE\n",procid);
     for(int i = 0; i < g->n_total; i++){
       int gid = g->local_unmap[i];
       if(i >= g->n_local) gid = g->ghost_unmap[i-g->n_local];
-      printf("Task %d: vtx %d (%d, %d), (%d, %d)\n",procid, gid,labels[i][0],labels[i][1], labels[i][2], labels[i][3]);
+      //printf("Task %d: vtx %d (%d, %d), (%d, %d)\n",procid, gid,labels[i][0],labels[i][1], labels[i][2], labels[i][3]);
     }
     
     //do MPI_Allreduce on each processor's local done values
     int local_done = reg_frontier.empty() && art_frontier.empty();
     MPI_Allreduce(&local_done,&done,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
   }
-  printf("task %d: finished propagation sweep\n",procid);
+  //printf("task %d: finished propagation sweep\n",procid);
 }
 
 int* propagate(dist_graph_t *g, std::queue<int>&reg_frontier,std::queue<int>&art_frontier,int**labels,uint64_t*potential_artpts){
   //propagate initially
   //printf("task %d: initiating propagation\n",procid);
   bfs_prop(g,reg_frontier,art_frontier,labels,potential_artpts);
+  //printf("task %d: after initial propagation sweep\n",procid);
   for(int i = 0; i < g->n_total; i++){
     int gid = g->local_unmap[i];
     if(i >= g->n_local) gid = g->ghost_unmap[i-g->n_local];
-    printf("Task %d: vtx %d (%d, %d), (%d, %d)\n",procid, gid,labels[i][0],labels[i][1], labels[i][2], labels[i][3]);
+    //printf("Task %d: vtx %d (%d, %d), (%d, %d)\n",procid, gid,labels[i][0],labels[i][1], labels[i][2], labels[i][3]);
   }
   //fix incomplete propagation
   while(true){
-    printf("task %d: fixing incomplete propagation\n",procid);
+    //printf("task %d: fixing incomplete propagation\n",procid);
     //check for incomplete propagation
     for(int i = 0; i < g->n_local; i++){
       if(potential_artpts[i] && get_grounding_status(labels[i]) == FULL){
@@ -303,8 +306,8 @@ int* propagate(dist_graph_t *g, std::queue<int>&reg_frontier,std::queue<int>&art
     int local_done = reg_frontier.empty();
     int done = 0;
     MPI_Allreduce(&local_done,&done,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
-    if(!done) printf("task %d: continuing to fix incomplete propagation\n",procid);
-    else printf("task %d: done fixing incomplete propagation\n",procid);
+    //if(!done) printf("task %d: continuing to fix incomplete propagation\n",procid);
+    //else printf("task %d: done fixing incomplete propagation\n",procid);
     //if no incomplete propagation, we're done
     if(done) break;
     //clear out half-full labels
@@ -328,7 +331,7 @@ int* propagate(dist_graph_t *g, std::queue<int>&reg_frontier,std::queue<int>&art
     else if(gs == HALF) removed[i] = labels[i][FIRST];
     else removed[i] = -1;
   }
-  printf("task %d: finishing propagation\n",procid);
+  //printf("task %d: finishing propagation\n",procid);
   return removed;
 }
 

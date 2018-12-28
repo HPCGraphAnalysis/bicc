@@ -326,10 +326,10 @@ int main(int argc, char** argv){
   
   for(int i = 0; i < n_local; i ++){
     for(int j = out_degree_list[i]; j < out_degree_list[i+1]; j++){
-      std::cout<<"Task "<<procid<<": "<< gids[i] <<" - "<<gids[out_array[j]]<<"\n";
+      //std::cout<<"Task "<<procid<<": "<< gids[i] <<" - "<<gids[out_array[j]]<<"\n";
     }
   }
-  std::cout<<"Task "<<procid<<"'s local graph\n";
+  //std::cout<<"Task "<<procid<<"'s local graph\n";
   for(int i =0; i < localEdgeCounter; i++){
     //std::cout<<"Task "<<procid<<": "<<localSrcs[i]<<" - "<<localDsts[i]<<"\n";
   }
@@ -355,13 +355,15 @@ int main(int argc, char** argv){
     ghost_unmap[i] = gids[n_local+i];
     bool tasked = false;
     for(int j = 0; j < np; j++){
-      if(ghost_unmap[i] < proc_offsets[j]){
+      if(ghost_unmap[i] < proc_offsets[j] && !tasked){
+        //std::cout<<"Task "<<procid<<": vertex "<<ghost_unmap[i]<<" belongs to proc "<<j-1<<"\n";
         ghost_tasks[i] = j-1;
         tasked = true;
       }
     }
     if(tasked == false){
       ghost_tasks[i] = np-1;
+      //std::cout<<"Task "<<procid<<": vertex "<<ghost_unmap[i]<<" belongs to proc "<<np-1<<"\n";
     }
   }
   
@@ -379,12 +381,13 @@ int main(int argc, char** argv){
   g.out_degree_list = local_offsets;
   g.local_unmap = local_unmap;
   g.ghost_unmap = ghost_unmap;
+  g.ghost_tasks = ghost_tasks;
   g.map = (struct fast_map*)malloc(sizeof(struct fast_map));
   init_map(g.map, (n_local+localEdgeCounter)*2);
   for(uint64_t i = 0; i < n_local + numcopies; i++){
     uint64_t vert = gids[i];
     set_value(g.map, vert, i);
-    get_value(g.map,vert);
+    //get_value(g.map,vert);
   }
     
   /*mpi_data_t comm;
@@ -444,7 +447,7 @@ int main(int argc, char** argv){
     }
   }*/
   //relabel_edges(g);
-  std::cout<<"AFTER RELABELING\n";
+  //std::cout<<"AFTER RELABELING\n";
   dist_graph_t* gp = &g;
   for(int i = 0; i < gp->n_local; i++){
     int out_degree = out_degree(gp,i);
@@ -452,11 +455,11 @@ int main(int argc, char** argv){
     for(int j = 0; j < out_degree; j++){
       int neighbor = gp->local_unmap[outs[j]];
       if(outs[j] >= gp->n_local) neighbor = gp->ghost_unmap[outs[j]-gp->n_local];
-      std::cout<<"Task "<<procid<<": "<<gp->local_unmap[i]<<" - "<<neighbor<<"\n";
+      //std::cout<<"Task "<<procid<<": "<<gp->local_unmap[i]<<" - "<<neighbor<<"\n";
     }
   }
   
-  std::cout<<"Task "<<procid<<": total vertices = "<<g.n_total<<"\n";
+  //std::cout<<"Task "<<procid<<": total vertices = "<<g.n_total<<"\n";
   int** labels = new int*[g.n_total];
   for(int i = 0; i < g.n_total; i++){
     labels[i] = new int[5];
@@ -466,7 +469,7 @@ int main(int argc, char** argv){
     labels[i][3] = -1;
     labels[i][4] = -1;
   }
-  std::cout<<"Task "<<procid<<": done creating labels\n";
+  //std::cout<<"Task "<<procid<<": done creating labels\n";
   std::queue<int> reg_frontier;
   std::queue<int> art_frontier;
   //set labels for grounded nodes.
