@@ -205,6 +205,9 @@ int main(int argc, char** argv){
   int* boundary_flags;
   
   //start timing for file reading here
+  double elt = 0.0;
+  elt = timer();
+
   if(procid == 0){
     read_grounded_file(argv[3],n,grounded_flags);
     
@@ -216,8 +219,26 @@ int main(int argc, char** argv){
   }
   
   //stop file read time
+  double fileread_time = timer() - elt;
+  double fileread_time_max = 0.0;
+  double fileread_time_min = 0.0;
+  double fileread_time_mean = 0.0;
+  //reduce times across processors
+  MPI_Reduce(&fileread_time,&fileread_time_max,1,MPI_DOUBLE,MPI_MAX,0,MPI_COMM_WORLD);
+  MPI_Reduce(&fileread_time,&fileread_time_min,1,MPI_DOUBLE,MPI_MIN,0,MPI_COMM_WORLD);
+  MPI_Reduce(&fileread_time,&fileread_time_mean,1,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+  if(procid == 0){
+    fileread_time_mean /= nprocs;
+    printf("File Read Timing:\n");
+    printf("\tMin:\t%f \n",fileread_time_min);
+    printf("\tMax:\t%f \n",fileread_time_max);
+    printf("\tMean: \t%f \n",fileread_time_mean);
+  }
+
   
   //start distribution timer
+  elt = timer();
+  
   MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Bcast(&m, 1, MPI_INT, 0, MPI_COMM_WORLD);
   
@@ -458,7 +479,26 @@ int main(int argc, char** argv){
       //std::cout<<"Task "<<procid<<": "<<gp->local_unmap[i]<<" - "<<neighbor<<"\n";
     }
   }
+  //stop distribution timer
+  double distribution_time = timer()-elt;
+  double distribution_time_min = 0.0;
+  double distribution_time_max = 0.0;
+  double distribution_time_mean = 0.0;
+  //reduce times across processors
+  MPI_Reduce(&distribution_time,&distribution_time_max,1,MPI_DOUBLE,MPI_MAX,0,MPI_COMM_WORLD);
+  MPI_Reduce(&distribution_time,&distribution_time_min,1,MPI_DOUBLE,MPI_MIN,0,MPI_COMM_WORLD);
+  MPI_Reduce(&distribution_time,&distribution_time_mean,1,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+  if(procid == 0){
+    distribution_time_mean /= nprocs;
+    printf("Distribution Timing:\n");
+    printf("\tMin:\t%f \n",distribution_time_min);
+    printf("\tMax:\t%f \n",distribution_time_max);
+    printf("\tMean: \t%f \n",distribution_time_mean);
+  }
   
+
+  //start solving timer
+  elt = timer();
   //std::cout<<"Task "<<procid<<": total vertices = "<<g.n_total<<"\n";
   int** labels = new int*[g.n_total];
   for(int i = 0; i < g.n_total; i++){
@@ -493,6 +533,25 @@ int main(int argc, char** argv){
       std::cout<<procid<<": removed "<<gp->local_unmap[i]<<"\n";
     }
   }
+  //stop and report solving times
+  //reduce times across processors
+  double solve_time = timer() - elt;
+  double solve_time_min = 0.0;
+  double solve_time_max = 0.0;
+  double solve_time_mean = 0.0;
+
+  MPI_Reduce(&solve_time,&solve_time_max,1,MPI_DOUBLE,MPI_MAX,0,MPI_COMM_WORLD);
+  MPI_Reduce(&solve_time,&solve_time_min,1,MPI_DOUBLE,MPI_MIN,0,MPI_COMM_WORLD);
+  MPI_Reduce(&solve_time,&solve_time_mean,1,MPI_DOUBLE,MPI_SUM,0,MPI_COMM_WORLD);
+  if(procid == 0){
+    solve_time_mean /= nprocs;
+    printf("Solve Timing:\n");
+    printf("\tMin:\t%f \n",solve_time_min);
+    printf("\tMax:\t%f \n",solve_time_max);
+    printf("\tMean: \t%f \n",solve_time_mean);
+  }
+  
+
   
   MPI_Barrier(MPI_COMM_WORLD);
   MPI_Finalize();
