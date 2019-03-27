@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <queue>
+#include <cstring>
 
 #include "dist_graph.h"
 #include "bicc_dist.h"
@@ -530,7 +531,7 @@ int main(int argc, char** argv){
 
   for(int i = 0; i < gp->n_local; i++){
     if(removed[i] > -2){
-      std::cout<<procid<<": removed "<<gp->local_unmap[i]<<"\n";
+      std::cout<<procid<<": removed "<<gp->local_unmap[i]+1<<"\n";
     }
   }
   //stop and report solving times
