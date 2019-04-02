@@ -3,10 +3,15 @@
 #include<fstream>
 #include<cstdlib>
 #include<random>
+#include<chrono>
 
 using std::string;
 using std::cout;
 using std::ofstream;
+
+
+typedef std::chrono::high_resolution_clock myclock;
+myclock::time_point beginning;
 
 void print_usage(){
   cout<<"Generator arguments:\n \
@@ -24,6 +29,28 @@ void print_usage(){
          \targv[8]: filename for the output mesh\n";
 }
 
+
+void writeAMOSShellScripts(string filename){
+  ofstream launchshell("launch_"+filename+"_jobs.sh");
+  launchshell<<"#!/bin/sh\n";
+  for(int i = 1; i < 32768; i*=2){
+    ofstream shell(filename+"-"+std::to_string(i)+"node.sh");
+    shell<<"#!/bin/sh\n";
+    shell<<"srun --ntasks "<<i<<" -o "<<filename<<"-"<<i<<"node.log ";
+    shell<<"/gpfs/u/home/SGPR/SGPRnbgl/scratch/ice ";
+    shell<<"/gpfs/u/home/SGPR/SGPRnbgl/scratch/"<<filename<<".quad.msh ";
+    shell<<"/gpfs/u/home/SGPR/SGPRnbgl/scratch/"<<filename<<"-borders.quad.msh ";
+    shell<<"/gpfs/u/home/SGPR/SGPRnbgl/scratch/"<<filename<<"-basal-friction.ascii 1\n";
+    int n_nodes = i/16;
+    if(n_nodes == 0) n_nodes = 1;
+     launchshell<<"sbatch -N "<<n_nodes<<" -t 20 ";
+    if(n_nodes<=64) launchshell<<"--partition small ./"<<filename<<"-"<<i<<"node.sh\n";
+    else if(n_nodes<= 512) launchshell<<"--partition medium ./"<<filename<<"-"<<i<<"node.sh\n";
+    else if(n_nodes == 1024) launchshell<<"--partition large ./"<<filename<<"-"<<i<<"node.sh\n";
+    shell.close();
+  }
+  launchshell.close();
+}
 
 void writeFileHeaders(ofstream& mesh, ofstream& borders, ofstream& basal,int nverts, int nelements, int nborders){
   //write two random strings to the mesh files/
@@ -52,16 +79,21 @@ void generateGrounding(bool& grounded_two, std::default_random_engine& gen, std:
   }
 }
 
-void generateDegenerateFeatures(int groundable_verts, int degenerate_block_size, int chain_length, int num_chains,
+void generateDegenerateFeatures(int groundable_verts,int central_size, int degenerate_block_size, int chain_length, int num_chains,
 		                ofstream& meshfile, ofstream& borderfile, std::default_random_engine& gen){
 
   std::uniform_int_distribution<int> vtxDist(0, groundable_verts-1);
+  myclock::duration d = myclock::now() - beginning;
+  gen.seed(d.count());
 
   int last_block_start = 0;
   int last_block_end = groundable_verts;
   //for all chains
   for(int c = 0; c < num_chains; c++){
     int attachvtx = vtxDist(gen);
+    while(!((attachvtx <= central_size)||(attachvtx%central_size==0)||((attachvtx+1)%central_size==0)||(attachvtx >= (central_size*(central_size-1))))){
+      attachvtx++;
+    }
     for(int chain = 0; chain < chain_length; chain++){
       
       //top border edges for this block
@@ -113,14 +145,26 @@ void generateDegenerateFeatures(int groundable_verts, int degenerate_block_size,
 void generateComplexChains(int central_ice_size, int complex_block_size, int chain_length, int num_complex_chains,
 		          ofstream& meshfile, ofstream& borderfile, std::default_random_engine& gen){
   std::uniform_int_distribution<int> vtxDist(0,central_ice_size-1);
+  myclock::duration d = myclock::now() - beginning;
+  gen.seed(d.count());
   //for all the chains
   for(int c = 0; c < num_complex_chains; c++){
     //get the starting point randomly
     int first_attachment_vertex = vtxDist(gen);
+    while(!((first_attachment_vertex <= central_ice_size)||(first_attachment_vertex%central_ice_size==0)||
+	   ((first_attachment_vertex+1)%central_ice_size==0)||(first_attachment_vertex>= (central_ice_size*(central_ice_size-1))))){
+      first_attachment_vertex++;
+    }
     //get the ending point randomly, assure it is not the starting point.
     int second_attachment_vertex = vtxDist(gen);
-    while(first_attachment_vertex == second_attachment_vertex) second_attachment_vertex = vtxDist(gen);
-    
+    while(first_attachment_vertex == second_attachment_vertex) {
+      second_attachment_vertex = vtxDist(gen);
+
+      while(!((second_attachment_vertex <= central_ice_size)||(second_attachment_vertex%central_ice_size==0)||
+	     ((second_attachment_vertex+1)%central_ice_size==0)||(second_attachment_vertex>=(central_ice_size*(central_ice_size-1))))){
+        second_attachment_vertex++;
+      }
+    }
     //these are the ranges of vertices to generate connection vertices.
     int last_block_start = central_ice_size;
     int last_block_end = central_ice_size + complex_block_size*complex_block_size - 1;
@@ -169,6 +213,11 @@ void generateComplexChains(int central_ice_size, int complex_block_size, int cha
     //create the middle blocks using a starting vertex from the previous block
     for(int chain = 0; chain < chain_length; chain++){
       int attachvtx = vtxDist(gen)%(complex_block_size*complex_block_size-1) + last_block_start;
+      while(!((attachvtx - last_block_start <= complex_block_size)||((attachvtx-last_block_start)%complex_block_size==0)||
+             ((attachvtx-last_block_start+1)%complex_block_size==0)||
+	     (attachvtx - last_block_start>= (complex_block_size*(complex_block_size-1))))){
+        attachvtx++;
+      }
 
       //top border edges for this block
       borderfile<<attachvtx+1<<" "<<last_block_end+1<<" 0\n";
@@ -215,7 +264,12 @@ void generateComplexChains(int central_ice_size, int complex_block_size, int cha
     //cout<<"\n\nLast complex block:\n";
     //create the last block using a starting vertex from the previous block, and an ending vertex from the center range.
     int attachvtx = vtxDist(gen)%(complex_block_size*complex_block_size-1) + last_block_start;
-
+    while(!((attachvtx - last_block_start <= complex_block_size)||((attachvtx-last_block_start)%complex_block_size==0)||
+           ((attachvtx-last_block_start+1)%complex_block_size==0)||
+	   (attachvtx - last_block_start>= (complex_block_size*(complex_block_size-1))))){
+      attachvtx++;
+    }
+    
     //top border edges for this block
     borderfile<<attachvtx+1<<" "<<last_block_end+1<<" 0\n";
     for(int i = 0; i <complex_block_size-2; i++){
@@ -284,6 +338,21 @@ void generateCenter(int dim, ofstream& mesh, ofstream& borders){
     }
   }
 
+  /*
+  for(int i = 0; i < dim; i++){
+    for(int j = 0; j < dim; j++){
+      int vtx = i*dim + j;
+      if(vtx <= dim)
+	      cout<<"vtx "<<vtx<<" is on the boundary\n";
+      else if(vtx >= dim*(dim-1))
+	      cout<<"vtx "<<vtx<<" is on the boundary\n";
+      else if(vtx%dim == 0)
+	      cout<<"vtx "<<vtx<<" is on the boundary\n";
+      else if((vtx+1)%dim == 0)
+	      cout<<"vtx "<<vtx<<" is on the boundary\n";
+    }
+  }*/
+
   //cout<<"Boundary Edge nodes:\n";
   //cout<<"\t top row: ";
   for(int i = 0; i < dim-1; i++){
@@ -324,6 +393,7 @@ void generateAnswers(bool grounded_two, int groundable_verts, int total_verts, o
 
 int main(int argc, char** argv) {
   
+  beginning = myclock::now();
   std::default_random_engine generator;
   std::uniform_real_distribution<double> distribution(0.0,1.0);
   int central_ice_size = 1000;
@@ -392,13 +462,15 @@ int main(int argc, char** argv) {
   
   int groundable_verts = central_block + complex_chains;
   
-  generateDegenerateFeatures(groundable_verts, degenerate_block_size, degenerate_chain_length, num_degenerate_chains, meshfile,borderfile, generator);
+  generateDegenerateFeatures(central_block, central_ice_size,  degenerate_block_size, degenerate_chain_length, num_degenerate_chains, meshfile,borderfile, generator);
   //if vtxID is < groundable_verts, it has an initially_grounded% chance to become grounded 
   cout<<"generating grounding information\n";
   bool grounded_two = false;
   generateGrounding(grounded_two, generator, distribution, initially_grounded, groundable_verts,total_vertices, groundfile);
-  
+  cout<<"generating answers\n";
   generateAnswers(grounded_two, groundable_verts, total_vertices, answerfile);
+  cout<<"generating run scrips for BG/Q\n";
+  writeAMOSShellScripts(filename);
 
   meshfile.close();
   borderfile.close();
