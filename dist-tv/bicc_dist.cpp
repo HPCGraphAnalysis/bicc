@@ -250,10 +250,62 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
   
 }
 
-void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* highs, uint64_t* lows, uint64_t* parents, bool* is_leaf){
+void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* highs, uint64_t* lows, uint64_t* parents, uint64_t* preorder){
+  
+  for(int i = 0; i < g->n_total; i++){
+    highs[i] = 0;
+    lows[i] = 0;
+  }
   
   //from leaves, compute highs and lows.
-  
+  uint64_t unfinished = g->n_total;
+  uint64_t last_unfinished = g->n_total+1;
+  int global_done = 0;
+  int local_done = 0;
+  while(!global_done){
+    while(unfinished < last_unfinished){
+      last_unfinished = unfinished;
+      unfinished = 0;
+      
+      for(int parent = 0; parent < g->n_local; parent++){
+        bool calculated = true;
+        uint64_t low = preorder[parent];
+        uint64_t high = preorder[parent];
+
+        int out_degree = out_degree(g, parent);
+        uint64_t* outs = out_vertices(g,parent);
+        for(int j = 0; j < out_degree; j++){
+          int local_nbor = outs[j];
+          if(parents[local_nbor] == g->local_unmap[parent]){
+            if(lows[local_nbor] == 0 || highs[local_nbor] == 0){
+              calculated = false;
+            } else {
+              if(lows[local_nbor] < low) low = lows[local_nbor];
+              if(highs[local_nbor] > high) high = highs[local_nbor];
+            }
+          } else {
+            if(preorder[local_nbor] < low)  low = preorder[local_nbor];
+            if(preorder[local_nbor] > high) high = preorder[local_nbor];
+          }
+        }
+        if(calculated){
+          highs[parent] = high;
+          lows[parent] = low;
+        } else {
+          unfinished ++;
+        }
+      }
+      
+    }
+    local_done = last_unfinished == 0;
+    MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); 
+    //if not done, ghost->owned->ghost exchanges (need to think more about what type of operation needs done with each)
+    if(!global_done){
+      //break;
+      owned_to_ghost_value_comm(g,comm,q,lows);
+      owned_to_ghost_value_comm(g,comm,q,highs);
+    }
+  }  
 }
 
 extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
@@ -303,14 +355,15 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   calculate_descendants(g,comm,q,parents,is_leaf,n_desc);
   std::cout<<"Finished calculating descendants\n";
   //2. calculate preorder labels for each owned vertex (using the number of descendants)
-  //delete [] is_leaf;
+  delete [] is_leaf;
   uint64_t* preorder = new uint64_t[g->n_total];
   calculate_preorder(g,comm,q,levels,parents,n_desc,preorder); 
   std::cout<<"Finished calculating preorder labels\n";
   //3. calculate high and low values for each owned vertex
   uint64_t* lows = new uint64_t[g->n_total];
   uint64_t* highs = new uint64_t[g->n_total];
-  
+  calculate_high_low(g, comm, q, highs, lows, parents, preorder);
+  std::cout<<"Finished high low calculation\n";
   //4. create vertices for each edge, including ghost edges. Ownership of ghost edges is ambiguous, but it shouldn't matter.
 
   //5. add edges to the auxiliary graph according to the high and low values
