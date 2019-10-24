@@ -882,9 +882,59 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, const std::map< 
   //set labels to send back
   for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 3){
     //look up the edges in the first and second indices of the recvbuf
+    std::pair<uint64_t, uint64_t> edge_to_lookup;
+    edge_to_lookup.first = recvbuf[exchangeIdx];
+    edge_to_lookup.second = recvbuf[exchangeIdx+1];
+    uint64_t edge_label = aux_labels[edgeToAuxVert[edge_to_lookup]];
+    recvbuf[exchangeIdx+2] = edge_label;
     //set the label in the third index of the recvbuf to be the label of the edges
   }
   //send the labels back and finish labeling everything.
+  status = MPI_Alltoallv(recvbuf, recvcnts, rdispls, MPI_INT, sendbuf, sendcnts, sdispls, MPI_INT, MPI_COMM_WORLD);
+
+  //for each local edge {vert, nbor} in the graph (we disregard the direction and so label both directed edges if they exist)
+  for(int vert = 0; vert < g->n_local; vert++){
+    for(int edgeIdx = g->out_degree_list[vert]; edgeIdx < g->out_degree_list[vert+1]; edgeIdx++){
+      uint64_t vert_global = g->local_unmap[vert];
+      uint64_t nbor = g->out_vertices[edgeIdx];
+      uint64_t nbor_global = 0;
+      if(nbor < g->n_local){
+        nbor_global = g->local_unmap[nbor];
+      } else {
+        nbor_global = g->ghost_unmap[nbor - g->n_local];
+      }
+      //if {vert, nbor} is nontree
+      if(parents[vert] != nbor_global && parents[nbor] != vert_global){
+        //if preorder[vert] < preorder[nbor] and the local edge is not labeled
+        if(preorder[vert] < preorder[nbor] && final_labels[edgeIdx] == 0 ){
+          //look through edges received to find the relevant edge {parents[nbor], g->local_unmap[nbor]} and use its label
+          for( updateIdx = 0; updateIdx < sendsize; updateIdx+=3){
+            std::pair<uint64_t, uint64_t> update_edge;
+            update_edge.first = sendbuf[updateIdx];
+            update_edge.second = sendbuf[updateIdx+1];
+            uint64_t update_label = sendbuf[updateIdx+2];
+            if((update_edge.first == nbor_global || update_edge.second == nbor_global) && (update_edge.first == parents[nbor] || update_edge.second == parents[nbor])){
+              final_labels[edgeIdx] = update_label;
+              break; //only one edge received corresponds to the current edge
+            }
+          }
+        //else if preorder[nbor] < preorder[vert] and the local edge is not labeled
+        } else if (preorder[nbor] < preorder[vert] && final_labels[edgeIdx] == 0){ //again, not sure this will ever happen
+          //look through edges received to find the relevant edge {parents[vert], g->local_unmap[vert]} and use its label
+          for(int updateIdx = 0; updateIdx < sendsize; updateIdx +=3){
+            std::pair<uint64_t, uint64_t> update_edge;
+            update_edge.first = sendbuf[updateIdx];
+            update_edge.second = sendbuf[updateIdx+1];
+            uint64_t update_label = sendbuf[updateIdx+2];
+            if((update_edge.first == vert_global || update_edge.second == vert_global) && (update_edge.first == parents[vert] || update_edge.second == parents[vert])){
+              final_labels[edgeIdx] = update_label;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
   
 }
 
