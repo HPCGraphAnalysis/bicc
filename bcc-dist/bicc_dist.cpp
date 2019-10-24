@@ -92,7 +92,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("Doing BCC-Color BFS stage\n");
   }
 
-  for(int i = 0; i < g->n_total; i++){
+  for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
     printf("%d's neighbors:\n",i);

@@ -43,6 +43,7 @@
 //@HEADER
 */
 
+#include <cstring>
 #include <mpi.h>
 #include <omp.h>
 #include <stdio.h>
