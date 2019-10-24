@@ -729,8 +729,8 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
   }
 }
 
-void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, const std::map< std::pair<uint64_t, uint64_t>, uint64_t> & edgeToAuxVert, 
-			  const std::map< uint64_t, std::pair<uint64_t, uint64_t> > & auxVertToEdge, uint64_t* preorder, uint64_t* parents,
+void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, std::map< std::pair<uint64_t, uint64_t>, uint64_t> & edgeToAuxVert, 
+			  std::map< uint64_t, std::pair<uint64_t, uint64_t> > & auxVertToEdge, uint64_t* preorder, uint64_t* parents,
                           uint64_t * aux_labels, uint64_t* final_labels){
 
   int* sendcnts = new int[nprocs];
@@ -896,7 +896,7 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, const std::map< 
   for(int vert = 0; vert < g->n_local; vert++){
     for(int edgeIdx = g->out_degree_list[vert]; edgeIdx < g->out_degree_list[vert+1]; edgeIdx++){
       uint64_t vert_global = g->local_unmap[vert];
-      uint64_t nbor = g->out_vertices[edgeIdx];
+      uint64_t nbor = g->out_edges[edgeIdx];
       uint64_t nbor_global = 0;
       if(nbor < g->n_local){
         nbor_global = g->local_unmap[nbor];
@@ -908,7 +908,7 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, const std::map< 
         //if preorder[vert] < preorder[nbor] and the local edge is not labeled
         if(preorder[vert] < preorder[nbor] && final_labels[edgeIdx] == 0 ){
           //look through edges received to find the relevant edge {parents[nbor], g->local_unmap[nbor]} and use its label
-          for( updateIdx = 0; updateIdx < sendsize; updateIdx+=3){
+          for(int updateIdx = 0; updateIdx < sendsize; updateIdx+=3){
             std::pair<uint64_t, uint64_t> update_edge;
             update_edge.first = sendbuf[updateIdx];
             update_edge.second = sendbuf[updateIdx+1];
@@ -1025,7 +1025,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }
   //6. remap labels to original edges and extend the labels to include certain non-tree edges that were excluded from the auxiliary graph.
   uint64_t* bicc_labels = new uint64_t[g->m_local];
-  for(uint64_t i = 0; i < g->n_local; i++){
+  /*for(uint64_t i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertice(g, i);
     for(int j = 0; j < out_degree; j++){
@@ -1037,7 +1037,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
 	  //else
 	    //add the global edge we need to some sort of communication set.
     }
-  }  
+  } */ 
 
  
   if (verbose) {
