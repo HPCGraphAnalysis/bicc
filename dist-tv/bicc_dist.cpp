@@ -126,7 +126,7 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
     int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
     sentcount[proc_to_send] += 2;
     sendbuf[sendbufidx++] = g->ghost_unmap[i - g->n_local];
-    sendbuf[sendbufidx++] = 0;
+    sendbuf[sendbufidx++] = values[i];
   }
   status = MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
 
@@ -134,6 +134,7 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
   for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx+= 2){
     int gid = recvbuf[exchangeIdx];
     int lid = get_value(g->map, gid);
+    if(values[lid] == 0 && recvbuf[exchangeIdx+1] != 0) values[lid] = recvbuf[exchangeIdx+1];
     recvbuf[exchangeIdx + 1] = values[lid];
   }
 
@@ -148,11 +149,130 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
   }
 }
 
+
+void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier, uint64_t* preorder){
+  //communicate ghosts to owners and owned to ghosts
+  int* sendcnts = new int[nprocs];
+  for(int i = 0; i < nprocs; i++){
+    sendcnts[i] = 0;
+  }
+
+  for(int i = g->n_local; i < g->n_total; i++){
+    sendcnts[g->ghost_tasks[i-g->n_local]] += 2;
+  }
+
+  int* recvcnts = new int[nprocs];
+  for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
+  int status = MPI_Alltoall(sendcnts,1,MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+  
+  int* sdispls = new int[nprocs];
+  int* rdispls = new int[nprocs];
+  sdispls[0] = 0;
+  rdispls[0] = 0;
+  for(int i = 1; i < nprocs; i++){
+    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
+  }
+  
+  int sendsize = 0;
+  int recvsize = 0;
+  int* sentcount = new int[nprocs];
+  for(int i = 0; i < nprocs; i++){
+    sendsize += sendcnts[i];
+    recvsize += recvcnts[i];
+    sentcount[i] = 0;
+  }
+
+  int* sendbuf = new int[sendsize];
+  int* recvbuf = new int[recvsize];
+  
+  //send along any information available on the current process
+  for(int i = g->n_local; i < g->n_total; i++){
+    int proc_to_send = g->ghost_tasks[i-g->n_local];
+    int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
+    sentcount[proc_to_send] += 2;
+    sendbuf[sendbufidx++] = g->ghost_unmap[i-g->n_local];
+    sendbuf[sendbufidx++] = preorder[i];
+  }
+  status = MPI_Alltoallv(sendbuf, sendcnts,sdispls,MPI_INT, recvbuf,recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
+  
+  //fill in nonzeros that were sent with GIDs
+  for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 2){
+    int gid = recvbuf[exchangeIdx];
+    int lid = get_value(g->map, gid);
+    //std::cout<<"Rank "<<procid<<" received preorder label "<<recvbuf[exchangeIdx+1]<<" for vertex "<<gid<<"\n";
+    if(preorder[lid] == 0 && recvbuf[exchangeIdx + 1] != 0){
+      preorder[lid] = recvbuf[exchangeIdx+1];
+      frontier.push(lid);
+      //std::cout<<"Rank "<<procid<<" pushing vertex "<<gid<<" onto the local queue\n";
+    } else if (preorder[lid] != 0 && recvbuf[exchangeIdx+1]!=0 && preorder[lid] != recvbuf[exchangeIdx+1]) std::cout<<"*********sent and owned preorder labels mismatch*************\n";
+    recvbuf[exchangeIdx+1] = preorder[lid];
+  }
+
+  status = MPI_Alltoallv(recvbuf,recvcnts,rdispls,MPI_INT,sendbuf,sendcnts,sdispls,MPI_INT,MPI_COMM_WORLD);
+  
+  for(int updateIdx=0; updateIdx < sendsize; updateIdx += 2){
+    int gid = sendbuf[updateIdx];
+    int lid = get_value(g->map, gid);
+    //std::cout<<"Rank "<<procid<<" updating vertex "<<gid<<" with label "<<sendbuf[updateIdx+1]<<"\n";
+    preorder[lid] = sendbuf[updateIdx+1];
+  }
+
+  //std::cout<<"Rank "<<procid<<"'s frontier size = "<<frontier.size()<<"\n";
+}
+
 extern "C" int calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* parents, bool* is_leaf, uint64_t* n_descendants){
   std::cout<<"Calculating Descendants\n";
+  for(int i = 0; i < g->n_total; i++) n_descendants[i] = 0;
+  std::queue<uint64_t> primary_frontier;
+  std::queue<uint64_t> secondary_frontier;
+  std::queue<uint64_t>* currQueue = &primary_frontier;
+  std::queue<uint64_t>* otherQueue = &secondary_frontier;
+  for(int i = 0; i < g->n_local; i++){
+    primary_frontier.push(i);
+  }
+  int global_done = 0;
+  while (!global_done){
+    while(currQueue->size() > 0){
+      uint64_t currVert = currQueue->front();
+      std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
+      currQueue->pop();
+      if(n_descendants[currVert] != 0) continue;
+      int out_degree = out_degree(g,currVert);
+      int children = 0;
+      int children_computed = 0;
+      int n_desc = 1;
+      uint64_t* outs = out_vertices(g, currVert);
+      for(int i = 0; i < out_degree; i++){
+        uint64_t nbor_local = outs[i];
+        if(parents[nbor_local] == g->local_unmap[currVert]){
+          children++;
+          if(n_descendants[nbor_local] > 0){
+            children_computed++;
+            n_desc+=n_descendants[nbor_local];
+          }
+        }
+      }
+      if(children_computed == children){
+        n_descendants[currVert] = n_desc;
+        //if(get_value(g->map, parents[currVert]) < g->n_local){
+        //  otherQueue->push(get_value(g->map, parents[currVert]));
+        //}
+      } else {
+        //std::cout<<"Rank "<<procid<<" was unable to compute n_desc for vertex "<<g->local_unmap[currVert]<<"\n";
+        otherQueue->push(currVert);
+      }
+    }
+    communicate_preorder_labels(g,*otherQueue, n_descendants);
+    int local_done = otherQueue->size();
+    MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    global_done = !global_done;
+    std::swap(currQueue,otherQueue);
+    //printf("Rank %d currQueue size = %d, otherQueue size = %d\n",procid, currQueue->size(),otherQueue->size());
+  }
   //std::set<uint64_t> unfinished;
   //all leaves have 1 descendant    
-  for(uint64_t i = 0; i < g->n_total; i++){
+  /*for(uint64_t i = 0; i < g->n_total; i++){
     if(is_leaf[i]) {
       n_descendants[i] = 1;
       //unfinished.insert(parents[i]);
@@ -173,7 +293,7 @@ extern "C" int calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_da
       unfinished = 0;
       for(int parent = 0; parent < g->n_local; parent++){
         if(n_descendants[parent] !=0) continue;
-        std::cout<<"\tchecking if vertex "<<parent<<" can be calculated\n"; 
+        std::cout<<"Rank "<<procid<<"\tchecking if vertex "<<parent<<" can be calculated\n"; 
         //look at neighbors whose parent is *iter, if all > 0, we have a winner!
         int out_degree = out_degree(g, parent);
         int children = 0;
@@ -208,60 +328,171 @@ extern "C" int calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_da
     local_done = last_unfinished == 0;
     MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); 
     //if not done, ghost->owned->ghost exchanges (need to think more about what type of operation needs done with each)
-    if(!global_done){
       //break;
-      owned_to_ghost_value_comm(g,comm,q,n_descendants);
-    }
+    owned_to_ghost_value_comm(g,comm,q,n_descendants);
+    
 
   }
-  return 0;
+  return 0;*/
 }
 
 void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* levels,  uint64_t* parents, uint64_t* n_desc, uint64_t* preorder){
   std::cout<<"\tCalculating Preorder Labels\n";
+  std::queue<uint64_t> frontier;
+  for(int i = 0; i < g->n_local; i++){
+    if(levels[i] == 0){
+      preorder[i] = 1;
+      frontier.push(i);
+    }
+  }
+  int global_done = 0;
+  while(!global_done){
+    while(frontier.size() > 0){
+      uint64_t currVert = frontier.front();
+      frontier.pop();
+      std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
+      int out_degree = out_degree(g,currVert);
+      uint64_t* outs = out_vertices(g,currVert);
+      uint64_t child_label = preorder[currVert]+1;
+      for(int nbor = 0; nbor < out_degree; nbor++){
+        uint64_t nborVert = outs[nbor];
+        if(parents[nborVert] == g->local_unmap[currVert]){
+          preorder[nborVert] = child_label;
+          child_label += n_desc[nborVert];
+          if(nborVert < g->n_local) frontier.push(nborVert);
+        }
+      }
+    }
+    
+    for(int i = 0; i < g->n_total; i++){
+      uint64_t global = 0;
+      if(i < g->n_local) global = g->local_unmap[i];
+      else global = g->ghost_unmap[i-g->n_local];
+      std::cout<<"Rank "<<procid<<"'s vertex "<<global<<" has label "<<preorder[i]<<"\n";
+    }
+
+    communicate_preorder_labels(g,frontier,preorder);
+    int local_done = frontier.size();
+    MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    std::cout<<"global number of vertices in frontiers: "<<global_done<<"\n";
+    global_done = !global_done;
+  }
   //go level-by-level on each process, communicating after each level is completed.
-  int max_level = 0;
+  /*int max_level = 0;
   for(int i = 0; i < g->n_local; i++){
     if(max_level < levels[i]) max_level = levels[i];
   }
   int global_max_level = 0;
   MPI_Allreduce(&max_level,&global_max_level, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  std::cout<<"\t\tRank "<<procid<<"'s Max level = "<<max_level<<"\n";
+  std::cout<<"\t\tRank "<<procid<<"'s Max level = "<<global_max_level<<"\n";
   
   for(int level = 0; level <= global_max_level; level++){
-    //std::cout<<"\t\tCalculating labels for level "<<level<<"\n";
+    std::cout<<"Rank "<<procid<<" Calculating labels for level "<<level<<"\n";
     //look through all owned vertices and calculate all their children serially
     for(int i = 0; i < g->n_local; i++){
       if(levels[i] != level) continue;  //either not involved in current calculation, or not able to be calculated yet
       if(level == 0) {                   //base case, root is labeled 1
         preorder[i] = 1;
-        continue;
+        std::cout<<"Rank "<<procid<<" setting vertex "<<g->local_unmap[i]<<"'s preorder label to 1\n";
       }
       int out_degree = out_degree(g, i);
       uint64_t* outs = out_vertices(g, i);
       uint64_t child_label = preorder[i] + 1; //first child's label is the parent's plus 1
       for(int j = 0; j < out_degree; j++){
-        if(j != 0) {
-          child_label += n_desc[outs[j-1]]; //the subsequent children need to factor in the previous childs' descendants
+        if(parents[outs[j]] == g->local_unmap[i]){
+          preorder[outs[j]] = child_label;
+          if(outs[j] < g->n_local){
+            std::cout<<"Rank "<<procid<<" setting vertex "<<g->local_unmap[outs[j]]<<"'s preorder label to "<<preorder[outs[j]]<<"\n";
+          } else {
+            std::cout<<"Rank "<<procid<<" setting vertex "<<g->ghost_unmap[outs[j]-g->n_local]<<"'s preorder label to "<<preorder[outs[j]]<<"\n"; 
+          }
+          child_label += n_desc[outs[j]]; //the subsequent children need to factor in the previous childs' descendants
         }
-        preorder[outs[j]] = child_label;
       }
     }
     std::cout<<"Rank "<<procid<<": entering communication\n"; 
     owned_to_ghost_value_comm(g,comm,q,preorder);
-  }
+  }*/
   
 }
 
-void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* highs, uint64_t* lows, uint64_t* parents, uint64_t* preorder){
+void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* highs, uint64_t* lows, uint64_t* parents, uint64_t* preorder,bool* is_leaf){
   
   for(int i = 0; i < g->n_total; i++){
     highs[i] = 0;
     lows[i] = 0;
   }
   
+  std::queue<uint64_t> primary_frontier;
+  std::queue<uint64_t> secondary_frontier;
+  std::queue<uint64_t>* currQueue = &primary_frontier;
+  std::queue<uint64_t>* otherQueue = &secondary_frontier;
+  //put all owned leaves on a frontier
+  for(int i = 0; i < g->n_local; i++){
+    primary_frontier.push(i);
+  }
+  int global_done = 0;
+  
+  //while the number of vertices in the global queues is not zero
+  while(!global_done){
+    //while the primary queue is not empty
+    while(currQueue->size() > 0){
+      uint64_t currVert = currQueue->front();
+      currQueue->pop();
+      //if the vertex was previously computed, skip
+      if(highs[currVert] != 0 && lows[currVert] != 0) continue;
+      bool calculated = true;
+      uint64_t low = preorder[currVert];
+      uint64_t high = preorder[currVert];
+      
+      int out_degree = out_degree(g,currVert);
+      uint64_t* outs = out_vertices(g,currVert);
+      for(int nborIdx = 0; nborIdx < out_degree; nborIdx++){
+        uint64_t local_nbor = outs[nborIdx];
+        uint64_t global_nbor = 0;
+        if(local_nbor < g->n_local) global_nbor = g->local_unmap[local_nbor];
+        else global_nbor = g->ghost_unmap[local_nbor-g->n_local];
+        //we're looking at a descendant here (do NOT consider edges to parents of currVert)
+        if(parents[local_nbor] == g->local_unmap[currVert]){
+          if(lows[local_nbor] == 0 || highs[local_nbor] == 0){
+            calculated = false;
+          } else {
+            if(lows[local_nbor] < low) {
+              low = lows[local_nbor];
+              
+            }
+            if(highs[local_nbor] > high) high = highs[local_nbor];
+          }
+        } else if (parents[currVert] != global_nbor) {
+          if(preorder[local_nbor] < low) low = preorder[local_nbor];
+          if(preorder[local_nbor] > high) high = preorder[local_nbor];
+        }
+      }
+      //calculate the current vertex if possible, if not push it onto the secondary queue
+      //if current vertex was calculated, push parent on the secondary frontier
+      if(calculated){
+        highs[currVert] = high;
+        lows[currVert] = low;
+        uint64_t local_parent = get_value(g->map, parents[currVert]);
+        if(local_parent < g->n_local){
+          otherQueue->push(local_parent);
+        }
+      } else {
+        otherQueue->push(currVert);
+      }
+    }
+    //communicate the highs and lows using the frontier comm function, secondary queue as input
+    communicate_preorder_labels(g,*otherQueue,highs);
+    communicate_preorder_labels(g,*otherQueue,lows);
+    //see if secondary queues are all empty with an MPI_Allreduce, MPI_SUM
+    int secondary = otherQueue->size();
+    MPI_Allreduce(&secondary, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    global_done = !global_done;
+    //switch secondary and primary queues
+    std::swap(currQueue,otherQueue);
+  }
   //from leaves, compute highs and lows.
-  uint64_t unfinished = g->n_total;
+  /*uint64_t unfinished = g->n_total;
   uint64_t last_unfinished = g->n_total+1;
   int global_done = 0;
   int local_done = 0;
@@ -308,7 +539,7 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       owned_to_ghost_value_comm(g,comm,q,lows);
       owned_to_ghost_value_comm(g,comm,q,highs);
     }
-  }  
+  }*/  
 }
 
 void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_graph_t* aux_g, std::map<std::pair<uint64_t, uint64_t>, uint64_t> &edgeToAuxVert,
@@ -317,22 +548,46 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   uint64_t n_srcs = 0;
   uint64_t n_dsts = 0;
   std::cout<<"Calculating the number of edges in the aux graph\n";  
+  //count self edges for each tree edge (maybe nontree edges are necessary as well, maybe not. We'll see).
+  for(uint64_t v = 0; v < g->n_local; v++){
+    for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
+      uint64_t w = g->out_edges[w_idx];
+      uint64_t w_global = 0;
+      if(w<g->n_local) w_global = g->local_unmap[w];
+      else w_global = g->ghost_unmap[w-g->n_local];
+      if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
+        //add a self edge in srcs and dsts
+        n_srcs++;
+        n_dsts++;
+      }
+    }
+  }
+  //non self-edges
   for(uint64_t v = 0; v < g->n_local; v++){
     for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
       uint64_t w = g->out_edges[j];
       uint64_t w_global = 0;
       if(w<g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
-      if(g->local_unmap[v] == parents[w] || parents[v] == w_global){ //this is a tree edge
-        if(preorder[v] == 1) continue;
-        if((lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])||(lows[v] < preorder[w] || highs[v]>=preorder[w])){
-          n_srcs+=2;
-          n_dsts+=2;
-        }
-      } else {
+      if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
         if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
-          n_srcs+=2;
-          n_dsts+=2;
+          n_srcs += 2;
+          n_dsts += 2;
+          //add {{parents[v], v}, {parents[w], w}} (undirected edges)
+        }
+      } else{
+        if(parents[w] == g->local_unmap[v]){
+          if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
+            //add {{parents[v], v} , {v, w}} as an edge
+            n_srcs += 2;
+            n_dsts += 2;
+          }
+        } else if (parents[v] == w_global){
+          if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
+            //add {{parents[w], w}, {w, v}} as an edge
+            n_srcs += 2;
+            n_dsts += 2;
+          }
         }
       }
     }
@@ -340,71 +595,57 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   
   uint64_t** srcs = new uint64_t*[n_srcs];
   uint64_t** dsts = new uint64_t*[n_dsts];
+  uint64_t** orig = new uint64_t*[n_srcs];
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
   for(uint64_t i = 0; i < n_srcs; i++){
     srcs[i] = new uint64_t[2];
     dsts[i] = new uint64_t[2];
+    orig[i] = new uint64_t[2];
   }
   uint64_t srcIdx = 0;
   uint64_t dstIdx = 0;
   std::cout<<"Creating srcs and dsts arrays\n";
+  //self edges
+  for(uint64_t v = 0; v < g->n_local; v++){
+    for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
+      uint64_t w = g->out_edges[w_idx];
+      uint64_t w_global = 0;
+      if(w<g->n_local) w_global = g->local_unmap[w];
+      else w_global = g->ghost_unmap[w-g->n_local];
+      if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
+        //add a self edge in srcs and dsts
+        orig[srcIdx][0]=v;
+        orig[srcIdx][1]=w;
+        if(g->local_unmap[v] < w_global){
+          srcs[srcIdx][0] = g->local_unmap[v];
+          srcs[srcIdx++][1] = w_global;
+          dsts[dstIdx][0] = g->local_unmap[v];
+          dsts[dstIdx++][1] = w_global;
+        } else {
+          srcs[srcIdx][0] = w_global;
+          srcs[srcIdx++][1] = g->local_unmap[v];
+          dsts[dstIdx][0] = w_global;
+          dsts[dstIdx++][1] = g->local_unmap[v];
+        }
+      }
+    }
+  }
+  
+
+  //non-self edges
   for(uint64_t v = 0; v < g->n_local; v++){
     for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
       uint64_t w = g->out_edges[j];//w is local, not preorder
       uint64_t w_global = 0;
       if(w < g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
-      if(g->local_unmap[v] == parents[w] || parents[v] == w_global){
-        if(preorder[v] == 1) continue;
-        if((lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])||(lows[v] < preorder[w] ||highs[v] >= preorder[w])){
-          //add the sorted edge to the arrays
-          //add {parents[v], v} as a src and {v, w} as a dst
-	  std::cout<<"Rank "<<procid<<" adding {"<<parents[v]<<","<<g->local_unmap[v]<<"} -- {"<< g->local_unmap[v]<<","<<w_global<<"} as an edge\n";
-          if(parents[v] < g->local_unmap[v]){
-            srcs[srcIdx][0] = parents[v];
-            srcs[srcIdx++][1] = g->local_unmap[v];
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-          } else {
-            srcs[srcIdx][0] = g->local_unmap[v];
-            srcs[srcIdx++][1] = parents[v];
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-          }
-          if(g->local_unmap[v] < w_global){
-            dsts[dstIdx][0] = g->local_unmap[v];
-            dsts[dstIdx++][1]=w_global;
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-          } else {
-            dsts[dstIdx][0] = w_global;
-            dsts[dstIdx++][1] = g->local_unmap[v];
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-          }
-          //add {v, w} as a src and {parents[v], v} as a dst
-          if(parents[v] < g->local_unmap[v]){
-            dsts[dstIdx][0] = parents[v];
-            dsts[dstIdx++][1] = g->local_unmap[v];
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-          } else {
-            dsts[dstIdx][0] = g->local_unmap[v];
-            dsts[dstIdx++][1] = parents[v];
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-          }
-          if(g->local_unmap[v] < w_global){
-            srcs[srcIdx][0] = g->local_unmap[v];
-            srcs[srcIdx++][1]=w_global;
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-          } else {
-            srcs[srcIdx][0] = w_global;
-            srcs[srcIdx++][1] = g->local_unmap[v];
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-          }
-          
-        }
-      } else {
+      if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
         if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
-          //add the sorted edge to the arrays
-          //add {parents[v], v} as a src and {parents[w], w} as a dst
-	  std::cout<<"Rank "<<procid<<" adding {"<<parents[v]<<","<<g->local_unmap[v]<<"} -- {"<<parents[w]<<","<<w_global<<"} as an edge\n";
+          //add {{parents[v], v}, {parents[w], w}} (undirected edges)
+	  //std::cout<<"Rank "<<procid<<" adding {"<<parents[v]<<","<<g->local_unmap[v]<<"} -- {"<<parents[w]<<","<<w_global<<"} as an edge\n";
+          orig[srcIdx][0] = v;
+          orig[srcIdx][1] = w;
           if(parents[v] < g->local_unmap[v]){
             srcs[srcIdx][0] = parents[v];
             srcs[srcIdx++][1] = g->local_unmap[v];
@@ -423,6 +664,8 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
             dsts[dstIdx++][1] = parents[w];
             //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
           }
+          orig[srcIdx][0] = v;
+          orig[srcIdx][1] = w;
           //add {parents[w], w} as a src and {parents[v], v} as a dst
           if(parents[v] < g->local_unmap[v]){
             dsts[dstIdx][0] = parents[v];
@@ -443,14 +686,108 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
             //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
           }
         }
+      } else{
+        if(parents[w] == g->local_unmap[v]){
+          if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
+            //add {{parents[v], v} , {v, w}} as an edge
+            orig[srcIdx][0] = v;
+            orig[srcIdx][1] = w;
+            //std::cout<<"Rank "<<procid<<" adding {"<<parents[v]<<","<<g->local_unmap[v]<<"} -- {"<< g->local_unmap[v]<<","<<w_global<<"} as an edge\n";
+            if(parents[v] < g->local_unmap[v]){
+              srcs[srcIdx][0] = parents[v];
+              srcs[srcIdx++][1] = g->local_unmap[v];
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            } else {
+              srcs[srcIdx][0] = g->local_unmap[v];
+              srcs[srcIdx++][1] = parents[v];
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            }
+            if(g->local_unmap[v] < w_global){
+              dsts[dstIdx][0] = g->local_unmap[v];
+              dsts[dstIdx++][1]=w_global;
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            } else {
+              dsts[dstIdx][0] = w_global;
+              dsts[dstIdx++][1] = g->local_unmap[v];
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            }
+            orig[srcIdx][0] = v;
+            orig[srcIdx][1] = w;
+            //add {v, w} as a src and {parents[v], v} as a dst
+            if(parents[v] < g->local_unmap[v]){
+              dsts[dstIdx][0] = parents[v];
+              dsts[dstIdx++][1] = g->local_unmap[v];
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            } else {
+              dsts[dstIdx][0] = g->local_unmap[v];
+              dsts[dstIdx++][1] = parents[v];
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            }
+            if(g->local_unmap[v] < w_global){
+              srcs[srcIdx][0] = g->local_unmap[v];
+              srcs[srcIdx++][1]=w_global;
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            } else {
+              srcs[srcIdx][0] = w_global;
+              srcs[srcIdx++][1] = g->local_unmap[v];
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            }
+          }
+        } else if (parents[v] == w_global){
+          if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
+            //add {{parents[w], w}, {w, v}} as an edge
+            //std::cout<<"Rank "<<procid<<" adding {"<<parents[w]<<","<<w_global<<"} -- {"<< w_global <<","<<g->local_unmap[v]<<"} as an edge\n";
+            orig[srcIdx][0] = v;
+            orig[srcIdx][1] = w;
+            if(parents[w] < w_global){
+              srcs[srcIdx][0] = parents[w];
+              srcs[srcIdx++][1] = w_global;
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            } else {
+              srcs[srcIdx][0] = w_global;
+              srcs[srcIdx++][1] = parents[w];
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            }
+            if(g->local_unmap[v] < w_global){
+              dsts[dstIdx][0] = g->local_unmap[v];
+              dsts[dstIdx++][1]=w_global;
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            } else {
+              dsts[dstIdx][0] = w_global;
+              dsts[dstIdx++][1] = g->local_unmap[v];
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            }
+            orig[srcIdx][0] = v;
+            orig[srcIdx][1] = w;
+            //add {v, w} as a src and {parents[v], v} as a dst
+            if(parents[w] < w_global){
+              dsts[dstIdx][0] = parents[w];
+              dsts[dstIdx++][1] = w_global;
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            } else {
+              dsts[dstIdx][0] = w_global;
+              dsts[dstIdx++][1] = parents[w];
+              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            }
+            if(g->local_unmap[v] < w_global){
+              srcs[srcIdx][0] = g->local_unmap[v];
+              srcs[srcIdx++][1]=w_global;
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            } else {
+              srcs[srcIdx][0] = w_global;
+              srcs[srcIdx++][1] = g->local_unmap[v];
+              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            }
+          }
+        }
       }
     }
   }
   std::cout<<"Finished populating srcs and dsts arrays:\n";
   
-  //for(int i = 0; i < n_srcs; i++){
-  //  std::cout<<"("<<srcs[i][0]<<","<<srcs[i][1]<<") -- ("<<dsts[i][0]<<","<<dsts[i][1]<<")\n";
-  //}
+  for(int i = 0; i < n_srcs; i++){
+    std::cout<<"Rank "<<procid<<"("<<srcs[i][0]<<","<<srcs[i][1]<<") -- ("<<dsts[i][0]<<","<<dsts[i][1]<<")\n";
+  }
   //srcs and dsts contain all edges in the auxiliary graph, copy other csr creation function to turn it into a graph.
   // remember to collect ghosting information, can loop through srcs and dsts to label auxiliary vertices and determine which ones are ghosts.
    
@@ -466,14 +803,14 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     std::pair<uint64_t, uint64_t> auxVert = std::make_pair(srcs[i][0], srcs[i][1]);
     if( edgeToAuxVert.find(auxVert) == edgeToAuxVert.end()) {
       //insert vert into both maps if it should not be ghosted.
-      if(get_value(g->map,auxVert.first) < g->n_local && get_value(g->map,auxVert.second) < g->n_local) {// both are not ghosts (good!)
+      if((get_value(g->map,auxVert.first) < g->n_local && get_value(g->map,auxVert.second) < g->n_local) || (orig[i][0] < g->n_local && orig[i][1] < g->n_local) ) {// both are not ghosts (good!)
         edgeToAuxVert.insert( std::make_pair(auxVert, currId));
         auxVertToEdge.insert( std::make_pair(currId, auxVert));
         currId++;
       } else  { //one of the endpoints is a ghosted vertex
         bool firstIsGhost = get_value(g->map,auxVert.first) >= g->n_local;
         bool secondIsGhost = get_value(g->map,auxVert.second) >= g->n_local;
-        
+         
         //only one endpoint can be ghosted, we don't have edges from ghosts to ghosts.
         if(auxVert.second < auxVert.first && secondIsGhost && !firstIsGhost){ //this is locally owned
           edgeToAuxVert.insert(std::make_pair(auxVert, currId));
@@ -522,13 +859,13 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     if(auxVertId < aux_n_local){
       aux_degrees[auxVertId]++;
     } else {
-      //std::cout<<"Ghost Edge {"<<auxVert.first<<","<<auxVert.second<<"} mapped to ID: "<<edgeToAuxVert[auxVert]<<"\n";
-      if(get_value(g->map,auxVert.first) >= g->n_local){
-        std::cout<<"Aux Vertex "<<auxVertId<<" is owned by rank "<<g->ghost_tasks[get_value(g->map,auxVert.first)-g->n_local]<<"\n";
-        ghost_tasks[auxVertId-aux_n_local] = g->ghost_tasks[get_value(g->map, auxVert.first) - g->n_local];
-      } else if (get_value(g->map,auxVert.second) >= g->n_local){
+      std::cout<<"Ghost Edge {"<<auxVert.first<<","<<auxVert.second<<"} mapped to ID: "<<edgeToAuxVert[auxVert]<<"\n";
+      if(get_value(g->map, auxVert.second) != NULL_KEY && get_value(g->map,auxVert.second) >= g->n_local){
         std::cout<<"Aux Vertex "<<auxVertId<<" is owned by rank "<<g->ghost_tasks[get_value(g->map,auxVert.second)-g->n_local]<<"\n";
         ghost_tasks[auxVertId-aux_n_local] = g->ghost_tasks[get_value(g->map, auxVert.second) - g->n_local];
+      } else if (get_value(g->map,auxVert.first) >= g->n_local){
+        std::cout<<"Aux Vertex "<<auxVertId<<" is owned by rank "<<g->ghost_tasks[get_value(g->map,auxVert.first)-g->n_local]<<"\n";
+        ghost_tasks[auxVertId-aux_n_local] = g->ghost_tasks[get_value(g->map, auxVert.first) - g->n_local];
       }
       /*if(auxVert.first < g->n_local){
         ghost_tasks[auxVertId] = g->ghost_tasks[get_value(g->map,auxVert.second) - g->n_local];
@@ -615,40 +952,39 @@ void aux_graph_comm(dist_graph_t* aux_g, std::map< std::pair<uint64_t, uint64_t>
     sendbuf[sendbufidx++] = globalEdge.first;
     sendbuf[sendbufidx++] = globalEdge.second;
     sendbuf[sendbufidx++] = labels[i];
+    std::cout<<"Rank "<<procid<<" sending {"<<globalEdge.first<<","<<globalEdge.second<<"} to rank "<<proc_to_send<<" with label "<<labels[i]<<"\n";
   }
 
   status = MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
   
   for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 3){
     std::pair<uint64_t, uint64_t> edge = std::make_pair(recvbuf[exchangeIdx], recvbuf[exchangeIdx+1]);
-    uint64_t vert = edgeToAuxVert[edge];
-    uint64_t owned_label = labels[vert];
-    uint64_t recvd_label = recvbuf[exchangeIdx+2];
-    if(owned_label == 0){
-      labels[vert] = recvd_label;
-      if(vert < aux_g->n_local){
-        int out_degree = out_degree(aux_g, vert);
-        uint64_t* outs = out_vertices(aux_g, vert);
-        for( int i = 0; i < out_degree; i++){
-          frontier.push(outs[i]);
-        }
+    std::cout<<"Rank "<<procid<<" received {"<<recvbuf[exchangeIdx]<<","<<recvbuf[exchangeIdx+1]<<"} with label "<<recvbuf[exchangeIdx+2]<<"\n";
+    if(edgeToAuxVert.find(edge) != edgeToAuxVert.end()){
+      uint64_t vert = edgeToAuxVert[edge];
+      uint64_t owned_label = labels[vert];
+      uint64_t recvd_label = recvbuf[exchangeIdx+2];
+      if(recvd_label != 0 && owned_label == 0 && vert < aux_g->n_local){
+        std::cout<<"Rank "<<procid<<" pushing {"<<edge.first<<","<<edge.second<<"} with label "<<recvd_label<<"\n";
+        frontier.push(vert);
+      } else if (recvd_label == 0){
+        recvbuf[exchangeIdx + 2] = owned_label;
+      } else if (recvd_label != owned_label){
+        std::cout<<"a received label doesn't match the owned label, this should not happen\n";
       }
-    } else if (recvd_label == 0){
-      recvbuf[exchangeIdx + 2] = owned_label;
-    } else if (recvd_label != owned_label){
-      std::cout<<"a received label doesn't match the owned label, this should not happen\n";
     }
   }
 
   status = MPI_Alltoallv(recvbuf, recvcnts, rdispls, MPI_INT, sendbuf, sendcnts, sdispls, MPI_INT, MPI_COMM_WORLD);
   //this is back where the verts are ghosted, should not attempt to add to frontier.
   for(int updateIdx = 0; updateIdx < sendsize; updateIdx += 3){
-    std::pair<uint64_t, uint64_t> edge = std::make_pair(recvbuf[updateIdx], recvbuf[updateIdx+1]);
+    std::pair<uint64_t, uint64_t> edge = std::make_pair(sendbuf[updateIdx], sendbuf[updateIdx+1]);
     uint64_t vert = edgeToAuxVert[edge];
     uint64_t owned_label = labels[vert];
-    uint64_t recvd_label = recvbuf[updateIdx +2];
+    uint64_t recvd_label = sendbuf[updateIdx +2];
     if(owned_label == 0){
       labels[vert] = recvd_label;
+      std::cout<<"Rank "<<procid<<" setting {"<<edge.first<<","<<edge.second<<"} to have label "<<recvd_label<<"\n";
     } else if (recvd_label != 0 && owned_label != recvd_label){
       std::cout<<"owned and received labels mismatch, this should not happen\n";
     }
@@ -672,7 +1008,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
     for(int i = 0; i < aux_g->n_local; i++){
       if(labels[i] == 0) n_unlabeled++;
     }
-    
+    std::cout<<"Rank "<<procid<<" #unlabeled = "<<n_unlabeled<<"\n"; 
     int propProc = -1;
     if(n_unlabeled > 0) propProc = procid;
     int global_propProc = -1;
@@ -689,12 +1025,16 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
       }
     }
     uint64_t currLabel = global_propProc + nprocs*round;
-    //while this propagation is not finished, do local work
+  //isn't   //while this propagation is not finished, do local work
     while(!global_done){
       while(frontier.size() > 0){
         uint64_t currVert = frontier.front();
         frontier.pop();
-        if(labels[currVert] == 0) labels[currVert] = currLabel;
+        if(labels[currVert] == 0){
+          labels[currVert] = currLabel;
+          std::pair<uint64_t, uint64_t> edge = auxVertToEdge[currVert];
+          std::cout<<"Rank "<<procid<<" labeled {"<<edge.first<<", "<<edge.second<<"} with label "<<currLabel<<"\n";
+        }
         if(currVert < aux_g->n_local){ //we don't have adjacency info for ghosted verts
           int out_degree = out_degree(aux_g, currVert);
           uint64_t* outs = out_vertices(aux_g, currVert);
@@ -719,7 +1059,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
     }
     round++;
     n_unlabeled = 0;
-    for(int i = 0; i < aux_g->n_total; i++){
+    for(int i = 0; i < aux_g->n_local; i++){
       if(labels[i] == 0) n_unlabeled++;
     }
     MPI_Allreduce(&n_unlabeled, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -772,6 +1112,7 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, std::map< std::p
               parent_edge.second = parents[nbor_local];
             }
             final_labels[nbor_idx] = aux_labels[edgeToAuxVert[parent_edge]];
+            std::cout<<"Labeling edge from "<<vert_global<<" to "<<nbor_global<<" with label "<<final_labels[nbor_idx]<<"\n";
             //need to also set the reverse edge? We consider both cases, so maybe not necessary.
           } else {
             //if w is ghosted, build up sendcnts to request the relevant edge label from the owning process
@@ -791,6 +1132,7 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, std::map< std::p
               parent_edge.second = parents[vert];
             }
             final_labels[nbor_idx] = aux_labels[edgeToAuxVert[parent_edge]];
+            std::cout<<"Labeling edge from "<<vert_global<<" to "<<nbor_global<<" with label "<<final_labels[nbor_idx]<<"\n";
           } else {
             //add to the sendcnts, not sure this can actually happen
             sendcnts[g->ghost_tasks[vert - g->n_local]]+=3;
@@ -915,6 +1257,7 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, std::map< std::p
             uint64_t update_label = sendbuf[updateIdx+2];
             if((update_edge.first == nbor_global || update_edge.second == nbor_global) && (update_edge.first == parents[nbor] || update_edge.second == parents[nbor])){
               final_labels[edgeIdx] = update_label;
+              //std::cout<<"Update label = "<<update_label<<"\n";
               break; //only one edge received corresponds to the current edge
             }
           }
@@ -936,6 +1279,106 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, std::map< std::p
     }
   }
   
+
+  for(int i = 0; i < nprocs; i++) sendcnts[i] = 0;
+  //there are still a few unlabeled edges possible, so if there are any unlabeled edges, send their GID pairs to the other process that owns an endpoint
+  for(int i = 0; i < g->n_local; i++){
+    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      uint64_t i_global = g->local_unmap[i];
+      uint64_t nbor = g->out_edges[j];
+      uint64_t nbor_global = 0;
+      if(nbor < g->n_local) nbor_global = g->local_unmap[nbor];
+      else nbor_global = g->ghost_unmap[nbor-g->n_local];
+      //if the label of this edge is zero, send the gids to the process that owns the ghosted vertex.
+      if(final_labels[j] == 0){
+        if(nbor >= g->n_local){
+          sendcnts[g->ghost_tasks[nbor - g->n_local]]+= 3;
+        } else{
+          printf("Rank %d has an unlabeled edge that is not ghosted somewhere else\n",procid);
+        }
+      }
+    }
+  }
+  for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
+  
+  status = MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+
+  sdispls[0] = 0;
+  rdispls[0] = 0;
+  for(int i = 1; i < nprocs; i++){
+    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
+  }
+  
+  sendsize = 0;
+  recvsize = 0;
+  for(int i = 0; i < nprocs; i++){
+    sendsize += sendcnts[i];
+    recvsize += recvcnts[i];
+    sentcount[i] = 0;
+  }
+
+  delete [] sendbuf;
+  delete [] recvbuf;
+  sendbuf = new int[sendsize];
+  recvbuf = new int[recvsize];
+
+  //go through all unlabeled edges again, add their gids and 0 for their label.
+  for(int i = 0; i < g->n_local; i++){
+    for(int j= g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      uint64_t i_global = g->local_unmap[i];
+      uint64_t nbor = g->out_edges[j];
+      uint64_t nbor_global = 0;
+      if(nbor < g->n_local) nbor_global = g->local_unmap[nbor];
+      else nbor_global = g->ghost_unmap[nbor-g->n_local];
+      if(final_labels[j] == 0){
+        if(nbor >= g->n_local){
+          int proc_to_send = g->ghost_tasks[nbor - g->n_local];
+          int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
+          sentcount[proc_to_send] += 3;
+          sendbuf[sendbufidx++] = nbor_global; //it is owned on the other process, easier to find
+          sendbuf[sendbufidx++] = i_global;
+          sendbuf[sendbufidx++] = 0;
+        }
+      }
+    }
+  }
+  status = MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
+
+  //fill in the edge labels
+  for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 3){
+    uint64_t global_owned = recvbuf[exchangeIdx];
+    uint64_t local_owned = get_value(g->map, global_owned);
+    uint64_t global_ghost = recvbuf[exchangeIdx + 1];
+    uint64_t local_ghost = get_value(g->map, global_ghost);
+    
+    //int out_degree = out_degree(g, local_owned);
+    //uint64_t* outs = out_vertices(g, local_owned);
+    for(int i = g->out_degree_list[local_owned]; i < g->out_degree_list[local_owned+1]; i++){
+      if(g->out_edges[i] == local_ghost){
+        recvbuf[exchangeIdx + 2] = final_labels[i];
+      }
+    }
+  }
+  
+  status = MPI_Alltoallv(recvbuf, recvcnts, rdispls, MPI_INT, sendbuf, sendcnts, sdispls, MPI_INT, MPI_COMM_WORLD);
+  for(int updateIdx = 0; updateIdx < sendsize; updateIdx += 3){
+    uint64_t global_ghost = sendbuf[updateIdx];
+    uint64_t local_ghost = get_value(g->map, global_ghost);
+    uint64_t global_owned = sendbuf[updateIdx+1];
+    uint64_t local_owned = get_value(g->map, global_owned);
+    
+    for(int i = g->out_degree_list[local_owned]; i < g->out_degree_list[local_owned+1]; i++){
+      if(g->out_edges[i] == local_ghost){
+        final_labels[i] = sendbuf[updateIdx+2];
+      }
+    }
+  }
+  delete [] sendcnts;
+  delete [] recvcnts;
+  delete [] sentcount;
+  delete [] sendbuf;
+  delete [] recvbuf;
 }
 
 extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
@@ -950,9 +1393,13 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
-    printf("%d's neighbors:\n",i);
+    printf("Rank %d: %d's neighbors:\n",procid,g->local_unmap[i]);
     for(int j = 0; j < out_degree; j++){
-      printf("\t%d\n",outs[j]);
+      if(outs[j] < g->n_local){
+        printf("\t%d\n",g->local_unmap[outs[j]]);
+      } else {
+        printf("\t%d\n",g->ghost_unmap[outs[j] - g->n_local]);
+      }
     }
   }
   uint64_t* parents = new uint64_t[g->n_total];
@@ -984,30 +1431,52 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   uint64_t* n_desc = new uint64_t[g->n_total];
   calculate_descendants(g,comm,q,parents,is_leaf,n_desc);
   std::cout<<"Finished calculating descendants\n";
+  for(int i = 0; i < g->n_local; i++){
+    printf("Rank %d: Vertex %d has %d descendants\n",procid,g->local_unmap[i],n_desc[i]);
+  }
+  for(int i = g->n_local; i < g->n_total; i++){
+    printf("Rank %d: Vertex %d has %d descendants\n",procid,g->ghost_unmap[i-g->n_local],n_desc[i]);  
+  }
   //2. calculate preorder labels for each owned vertex (using the number of descendants)
-  delete [] is_leaf;
+  //delete [] is_leaf;
   uint64_t* preorder = new uint64_t[g->n_total];
+  for(int i = 0; i < g->n_total; i++) preorder[i] = 0;
   calculate_preorder(g,comm,q,levels,parents,n_desc,preorder); 
   std::cout<<"Finished calculating preorder labels\n";
+  for(int i = 0; i < g->n_local; i++){
+    printf("Rank %d: Vertex %d has a preorder label of %d \n",procid,g->local_unmap[i],preorder[i]);
+  }
+  for(int i = g->n_local; i < g->n_total; i++){
+    printf("Rank %d: Vertex %d has a preorder label of %d \n",procid,g->ghost_unmap[i-g->n_local],preorder[i]);  
+  }
+  
   //3. calculate high and low values for each owned vertex
   uint64_t* lows = new uint64_t[g->n_total];
   uint64_t* highs = new uint64_t[g->n_total];
-  calculate_high_low(g, comm, q, highs, lows, parents, preorder);
+  calculate_high_low(g, comm, q, highs, lows, parents, preorder,is_leaf);
   std::cout<<"Finished high low calculation\n";
+  for(int i = 0; i < g->n_local; i++){
+    printf("Rank %d: Vertex %d has a high of %d and a low of %d\n",procid,g->local_unmap[i],highs[i],lows[i]);
+  }
+  for(int i = g->n_local; i < g->n_total; i++){
+    printf("Rank %d: Vertex %d has a high of %d and a low of %d\n",procid,g->ghost_unmap[i-g->n_local],highs[i],lows[i]);  
+  }
   //4. create auxiliary graph.
   dist_graph_t* aux_g = new dist_graph_t;
   std::map< std::pair<uint64_t, uint64_t> , uint64_t > edgeToAuxVert;
   std::map< uint64_t, std::pair<uint64_t, uint64_t> > auxVertToEdge;
   create_aux_graph(g,comm,q,aux_g,edgeToAuxVert,auxVertToEdge,preorder,lows,highs,n_desc,parents);
-  std::cout<<"Finished creating auxiliary graph:\n";
+  std::cout<<"Rank "<<procid<<"Finished creating auxiliary graph:\n";
   
   for(int i = 0; i < aux_g->n_local; i++){
-    std::cout<<"\taux vertex "<<i;//<<" is adjacent to:\n";
+    std::pair<uint64_t, uint64_t> edge = auxVertToEdge[i];
+    std::cout<<"\taux vertex {"<<edge.first<<","<<edge.second<<"}";//<<" is adjacent to:\n";
     int out_degree = out_degree(aux_g, i);
     std::cout<<" has degree "<<out_degree<<"\n";
     uint64_t* outs = out_vertices(aux_g, i);
     for(int j = 0; j < out_degree; j++){
-      std::cout<<"\t\taux vertex "<<outs[j];
+      std::pair<uint64_t, uint64_t> otheredge = auxVertToEdge[outs[j]];
+      std::cout<<"\t\taux vertex {"<<otheredge.first<<","<<otheredge.second<<"}";
       if(outs[j] >= aux_g->n_local){
         std::cout<<" owned by rank "<<aux_g->ghost_tasks[outs[j]-aux_g->n_local];
       }
@@ -1018,28 +1487,81 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   std::cout<<"aux_g->n_total = "<<aux_g->n_total<<"\n";
   std::cout<<"aux_g->n_local = "<<aux_g->n_local<<"\n";
   uint64_t* labels = new uint64_t[aux_g->n_total];
+  for(int i = 0; i < aux_g->n_total; i++) labels[i] = 0;
   aux_connectivity_check(aux_g, edgeToAuxVert,auxVertToEdge, labels);
+  std::cout<<"Rank "<<procid<<"OUTPUTTING AUX GRAPH ********\n";
   for(int i = 0; i < aux_g->n_local; i++){
     std::pair<uint64_t, uint64_t> edge = auxVertToEdge[i];
     std::cout<<"Edge {"<<edge.first<<","<<edge.second<<"} is labeled "<<labels[i]<<"\n";
   }
   //6. remap labels to original edges and extend the labels to include certain non-tree edges that were excluded from the auxiliary graph.
   uint64_t* bicc_labels = new uint64_t[g->m_local];
-  /*for(uint64_t i = 0; i < g->n_local; i++){
-    int out_degree = out_degree(g, i);
-    uint64_t* outs = out_vertice(g, i);
-    for(int j = 0; j < out_degree; j++){
-      uint64_t nbor = outs[j];
-      //if the edge is non-tree
-        //if the preorder for i is greater than the preorder for nbor, or vice versa
-	  //if the vertex that is greater is locally owned
-	    //set the label, the edge we need is locally owned
-	  //else
-	    //add the global edge we need to some sort of communication set.
+  for(int i = 0; i < g->m_local; i++) bicc_labels[i] = 0;
+  finish_edge_labeling(g,aux_g,edgeToAuxVert,auxVertToEdge,preorder,parents,labels,bicc_labels);
+  std::cout<<"Rank "<<procid<<" OUTPUTTING FINAL LABELS *********\n";
+  for(int i = 0; i < g->n_local; i++){
+    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      uint64_t nbor = g->out_edges[j];
+      if(nbor < g->n_local){
+        std::cout<<"Rank "<<procid<<"Edge from "<<g->local_unmap[i]<<" to "<<g->local_unmap[nbor]<<" has label "<<bicc_labels[j]<<"\n";
+      } else {
+        std::cout<<"Rank "<<procid<<"Edge from "<<g->local_unmap[i]<<" to "<<g->ghost_unmap[nbor-g->n_local]<<" has label "<<bicc_labels[j]<<"\n";
+      }
     }
-  } */ 
+  }
+  //output the global list of articulation points, for easier validation (not getting rid of all debug output just yet.)
+  uint64_t* artpts = new uint64_t[g->n_local];
+  int n_artpts = 0;
+  for(int i = 0; i < g->n_local; i++){
+    uint64_t bicc = 0;
+    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      if(bicc == 0){
+        bicc = bicc_labels[j];
+      } else {
+        if(bicc != bicc_labels[j]){
+          artpts[n_artpts++] = g->local_unmap[i];
+          break;
+        }
+      }
+    }
+  }
+  int* sendcnts = new int[nprocs];
+  for(int i = 0; i < nprocs; i++) sendcnts[i] = n_artpts;
+  int* recvcnts = new int[nprocs];
+  int status = MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+  
+  int* sdispls = new int[nprocs];
+  int* rdispls = new int[nprocs];
+  sdispls[0] = 0;
+  rdispls[0] = 0;
+  for(int i = 1; i < nprocs; i++){
+    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
+  }
 
- 
+  int sendsize = 0;
+  int recvsize = 0;
+  for(int i = 0; i < nprocs; i++){
+    sendsize += sendcnts[i];
+    recvsize += recvcnts[i];
+  }
+  
+  int * sendbuf = new int[sendsize];
+  int* recvbuf = new int[recvsize];
+  int sendbufidx = 0;
+  for(int j = 0; j < nprocs; j++){
+    for(int i = 0; i < n_artpts; i++){
+      sendbuf[sendbufidx++] = artpts[i];
+    }
+  }
+  status = MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
+
+  if(procid == 0){
+    for(int i = 0; i < recvsize; i++){
+      std::cout<<"Vertex "<<recvbuf[i]<<" is an articulation point\n";
+    }
+  }
+
   if (verbose) {
     elt = timer() - elt;
     printf("\tDone: %9.6lf\n", elt);
