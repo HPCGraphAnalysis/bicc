@@ -146,8 +146,8 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     labels[i][3] = -1;
     labels[i][4] = -1;
   }
-  
-  bcc_bfs_prop_driver(g,potential_art_pts,labels);
+  int* artpt_flags = new int[g->n_local];  
+  bcc_bfs_prop_driver(g,potential_art_pts,labels,artpt_flags);
   
   for(int i = 0; i< g->n_total; i++){
     int gid = 0;
@@ -155,7 +155,52 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     else gid = g->ghost_unmap[i-g->n_local];
     printf("task %d: vertex %d: %d, %d; %d, %d; %d\n", procid, gid, labels[i][0], labels[i][1],labels[i][2],labels[i][3], labels[i][4]);
   }  
+  
+  uint64_t* artpts = new uint64_t[g->n_local];
+  int n_artpts = 0;
+  for(int i = 0; i < g->n_local; i++){
+    if(artpt_flags[i] == 1){
+      artpts[n_artpts++] = g->local_unmap[i];
+    }
+  }
 
+  int* sendcnts = new int[nprocs];
+  for(int i = 0; i < nprocs; i++) sendcnts[i] = n_artpts;
+  int* recvcnts = new int[nprocs];
+  int status = MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+
+  int* sdispls = new int[nprocs];
+  int* rdispls = new int[nprocs];
+  sdispls[0] = 0;
+  rdispls[0] = 0;
+  for(int i = 1; i < nprocs; i++){
+    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
+  }
+
+  int sendsize = 0;
+  int recvsize = 0;
+  for(int i = 0; i < nprocs; i++){
+    sendsize += sendcnts[i];
+    recvsize += recvcnts[i];
+  }
+
+  int * sendbuf = new int[sendsize];
+  int* recvbuf = new int[recvsize];
+  int sendbufidx = 0;
+  for(int j = 0; j < nprocs; j++){
+    for(int i = 0; i < n_artpts; i++){
+      sendbuf[sendbufidx++] = artpts[i];
+    }
+  }
+  status = MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
+
+  if(procid == 0){
+    for(int i = 0; i < recvsize; i++){
+      std::cout<<"*********Vertex "<<recvbuf[i]<<" is an articulation point*****************\n";
+    }
+  }
+  
   if (verbose) {
     elt = timer() - elt;
     printf("\tDone: %9.6lf\n", elt);
