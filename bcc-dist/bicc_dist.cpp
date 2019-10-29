@@ -92,28 +92,28 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("Doing BCC-Color BFS stage\n");
   }
 
-  for(int i = 0; i < g->n_local; i++){
+  /*for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
     printf("%d's neighbors:\n",i);
     for(int j = 0; j < out_degree; j++){
       printf("\t%d\n",outs[j]);
     }
-  }
+  }*/
   uint64_t* parents = new uint64_t[g->n_total];
   uint64_t* levels = new uint64_t[g->n_total];
   bicc_bfs_pull(g, comm, q, parents, levels, g->max_degree_vert);
   
   MPI_Barrier(MPI_COMM_WORLD);
   
-  for(int i = 0; i < g->n_local; i++){
+  /*for(int i = 0; i < g->n_local; i++){
     int curr_global = g->local_unmap[i];
     printf("vertex %d, parent: %d, level: %d\n",curr_global, parents[i], levels[i]);
   }
   for(int i = 0; i < g->n_ghost; i++){
     int curr = g->n_local + i;
     printf("vertex %d, parent: %d, level: %d\n",g->ghost_unmap[i], parents[curr], levels[curr]);
-  }
+  }*/
   
   if (verbose) {
     elt = timer() - elt;
@@ -126,7 +126,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   
   for(int i = 0; i < g->n_total; i++) potential_art_pts[i] = 0;
-  
+  std::cout<<"Doing art_pt_heuristic\n"; 
   art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
   
   for(int i = 0; i < g->n_total; i++){
@@ -149,12 +149,12 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   int* artpt_flags = new int[g->n_local];  
   bcc_bfs_prop_driver(g,potential_art_pts,labels,artpt_flags);
   
-  for(int i = 0; i< g->n_total; i++){
+  /*for(int i = 0; i< g->n_total; i++){
     int gid = 0;
     if(i < g->n_local) gid = g->local_unmap[i];
     else gid = g->ghost_unmap[i-g->n_local];
     printf("task %d: vertex %d: %d, %d; %d, %d; %d\n", procid, gid, labels[i][0], labels[i][1],labels[i][2],labels[i][3], labels[i][4]);
-  }  
+  } */ 
   
   uint64_t* artpts = new uint64_t[g->n_local];
   int n_artpts = 0;

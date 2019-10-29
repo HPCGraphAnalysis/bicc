@@ -52,9 +52,9 @@
 #include "comms.h"
 
 int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
-            uint64_t* parents, uint64_t* levels, bool* is_leaf, uint64_t root);
+            uint64_t* parents, uint64_t* levels, uint64_t root);
 
 int bicc_bfs_pull(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
-            uint64_t* parents, uint64_t* levels, bool* is_leaf, uint64_t root);
+            uint64_t* parents, uint64_t* levels, uint64_t root);
 
 #endif

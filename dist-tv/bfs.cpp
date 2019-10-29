@@ -59,7 +59,7 @@ extern bool verbose, debug, verify, output;
 
 
 int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
-             uint64_t* parents, uint64_t* levels, bool* is_leaf, uint64_t root)
+             uint64_t* parents, uint64_t* levels, uint64_t root)
 {  
   if (debug) { printf("procid %d wcc_bfs() start\n", procid); }
   double elt = 0.0;
@@ -90,9 +90,6 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp for
   for (uint64_t i = 0; i < g->n_total; ++i)
     levels[i] = NULL_KEY;
-#pragma omp for
-  for (uint64_t i = 0; i < g->n_total; ++i)
-    is_leaf[i] = true;
 
 #pragma omp single
 {
@@ -130,7 +127,6 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
         uint64_t out_index = outs[j];
         if (parents[out_index] == NULL_KEY)
         {
-          is_leaf[vert_index] = false;
           parents[out_index] = vert;
 
           if (out_index < g->n_local)
@@ -273,7 +269,7 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 
 
 int bicc_bfs_pull(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
-                   uint64_t* parents, uint64_t* levels, bool* is_leaf, uint64_t root)
+                   uint64_t* parents, uint64_t* levels, uint64_t root)
 {
   q->send_size = 0;
   for (int32_t i = 0; i < nprocs; ++i)
@@ -295,9 +291,6 @@ int bicc_bfs_pull(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp for
   for (uint64_t i = 0; i < g->n_total; ++i)
     levels[i] = NULL_KEY;
-#pragma omp for
-  for (uint64_t i = 0; i < g->n_total; ++i)
-    is_leaf[i] = true;
 #pragma omp single
 {
   uint64_t root_index = get_value(g->map, root);
@@ -330,7 +323,6 @@ int bicc_bfs_pull(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
             parents[vert_index] = g->ghost_unmap[out_index - g->n_local];
           }
           levels[vert_index] = level;
-          is_leaf[out_index] = false;
           add_vid_to_send(&tq, q, vert_index);
           //add_vid_to_queue(&tq, q, vert_index);
           ++tq.thread_queue_size;
@@ -394,7 +386,6 @@ int bicc_bfs_pull(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     {
       uint64_t vert_index = get_value(g->map, comm->recvbuf_vert[i]);
       parents[vert_index] = comm->recvbuf_data[i];
-      is_leaf[comm->recvbuf_data[i]] = false;
       levels[vert_index] = level;
     }
 

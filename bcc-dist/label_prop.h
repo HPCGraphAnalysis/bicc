@@ -162,6 +162,13 @@ void communicate(dist_graph_t *g, int** labels, std::queue<int>& reg, std::queue
       else reg.push(lid);
     }
   }
+  delete [] sendcnts;
+  delete [] recvcnts;
+  delete [] sdispls;
+  delete [] rdispls;
+  delete [] sentcount;
+  delete [] recvbuf;
+  delete [] sendbuf;
   //printf("task %d: Concluding communication\n",procid); 
 }
 
@@ -461,7 +468,7 @@ int** bcc_bfs_prop_driver(dist_graph_t *g, uint64_t* potential_artpts, int**labe
         }
       }
     } 
-    printf("task %d: completed grounding\n",procid);
+    //printf("task %d: completed grounding\n",procid);
     //communicate the grounding to other (maybe push this out of the whole grounding?)
     
     communicate(g,labels, reg_frontier,art_frontier,potential_artpts);
