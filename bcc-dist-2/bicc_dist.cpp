@@ -160,7 +160,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //set degree counts for ghosts
   std::vector<uint64_t> ghost_degrees(g->n_ghost, 0);
   uint64_t ghost_adjs_total = 0;
-  for(int i = 0: i < g->m_local; i++){
+  for(int i = 0; i < g->m_local; i++){
     ghost_degrees[g->out_edges[i]]++;
   }
   std::vector<uint64_t> ghost_offsets(g->n_ghost+1,0);
