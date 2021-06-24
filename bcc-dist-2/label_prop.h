@@ -350,6 +350,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
   bool* potential_artpt_did_prop_lower = new bool[g->n_total];
   //all vertices flagged in the LCA traversals
   //can initially start propagating.
+  std::cout<<"Task "<<procid<<": starting propagations\n";
   for(uint64_t i = 0; i < g->n_local; i++){
     if(potential_artpts[i] != 0) {
       prop_queue.push(i);
@@ -384,7 +385,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
     if(curr_prop_queue->size() > 0){
       uint64_t curr_vtx = curr_prop_queue->front();
       curr_prop_queue->pop();
-      std::cout<<"looking at vertex "<<curr_vtx<<"\n"; 
+      std::cout<<"Task "<<procid<<": looking at vertex "<<curr_vtx<<"\n"; 
       std::cout<<"LCA_label is ";
       for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); ++it){
         std::cout<<*it<<" ";
@@ -422,11 +423,72 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
         }
       }
     }
+    std::cout<<"Task "<<procid<<": communicating...\n"; 
     
+    for(int p = 0; p < nprocs; p++){
+      if(p == procid){
+	
+        std::cout<<"Task "<<p<<": owned gids:\n\t";
+        for(int i = 0; i < g->n_local; i++){
+	  std::cout<<g->local_unmap[i]<<" ";
+	}
+	std::cout<<"\n";
+        std::cout<<"Task "<<p<<": owned LCA_labels:\n\t";
+        for(int i = 0; i < g->n_local; i++){
+	  std::cout<<"{";
+	  for(auto it = LCA_labels[i].begin(); it != LCA_labels[i].end(); it++){
+	    std::cout<<*it<<" ";
+	  }
+	  std::cout<<"}";
+	}
+	std::cout<<"\n";
+
+	std::cout<<"Task "<<p<<": owned low labels:\n\t";
+	for(int i = 0; i < g->n_local; i++){
+	  std::cout<<low_labels[i]<<" ";
+	}
+	std::cout<<"\n";
+
+        std::cout<<"Task "<<p<<": ghost gids:\n\t";
+	for(int i = 0; i < g->n_ghost; i++){
+	  std::cout<<g->ghost_unmap[i]<<" ";
+	}
+	std::cout<<"\n";
+
+        std::cout<<"Task "<<p<<": ghost LCA_labels:\n\t";
+	for(int i = 0; i < g->n_ghost; i++){
+	  std::cout<<"{";
+	  for(auto it =LCA_labels[i+g->n_local].begin(); it != LCA_labels[i+g->n_local].end(); it++){
+	    std::cout<<*it<<" ";
+	  }
+	  std::cout<<"}";
+	}
+	std::cout<<"\n";
+
+	std::cout<<"Task "<<p<<": ghost low labels:\n\t";
+	for(int i = 0; i < g->n_ghost; i++){
+	  std::cout<<low_labels[i+g->n_local]<<" ";
+	}
+	std::cout<<"\n";
+
+	std::cout<<"Task "<<p<<": verts_to_send contains:\n\t";
+	for(auto it = verts_to_send.begin(); it != verts_to_send.end(); it++){
+	  std::cout<<g->local_unmap[*it]<<" ";
+	}
+	std::cout<<"\nTask "<<p<<": labels_to_send contains:\n\t";
+	for(auto it = labels_to_send.begin(); it != labels_to_send.end(); it++){
+	  std::cout<<*it<<" ";
+	}
+	std::cout<<"\n";
+	std::cout<<"Task "<<p<<": next_prop_queue->size() = "<<next_prop_queue->size()<<"\n";
+      }
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
     //communicate any changed label, and the label of any LCA that we're sending
     //to remote processes. Have to send LCA labels because of local reductions.
     communicate(g,verts_to_send, labels_to_send, procs_to_send, LCA_procs_to_send, LCA_labels, low_labels, remote_LCA_labels, remote_LCA_levels, levels,next_prop_queue);
-
+    
+    std::cout<<"Task "<<procid<<": done communicating... \n";
     std::swap(curr_prop_queue, next_prop_queue);
 
     //if all queues are empty, the loop can be broken
