@@ -162,7 +162,11 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
 	}
       }
     }
-
+     
+    if(procid == 0 && curr_vtx == 2 && nbor == 3){
+      std::cout<<"Task 0: curr_vtx = 2, nbor = 3, low_labels[curr_vtx] = "<<low_labels[curr_vtx]<<" low_labels[nbor] = "<<low_labels[nbor]
+	       <<", levels[low_labels[curr_vtx]] = "<<levels[low_labels[curr_vtx]]<<", levels[low_labels[nbor]] = "<<levels[low_labels[nbor]]<<"\n";
+    }
     //****MAY WANT TO MAKE SURE LABELS ARE REDUCED BEFORE THIS?******
     if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
        levels[low_labels[curr_vtx]] > levels[low_labels[nbor]]
@@ -246,7 +250,8 @@ void communicate(dist_graph_t* g,
     }
     final_labels_to_send.insert(*LCA_GID_it);
   }
-  
+
+
   int* sendcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++) sendcnts[i] = 0;
 
@@ -263,6 +268,17 @@ void communicate(dist_graph_t* g,
       sendcnts[*it2]+=3;
     }
   }
+  
+  for(int p = 0; p < nprocs; p++){
+    if(p == procid){
+      std::cout<<"Task "<<procid<<": sendcnts:\n\t";
+      for(int i = 0; i < nprocs; i++){
+        std::cout<<sendcnts[i]<<" ";
+      }
+      std::cout<<std::endl;
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
 
   int* recvcnts = new int[nprocs];
   MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
@@ -273,7 +289,7 @@ void communicate(dist_graph_t* g,
   int* rdispls = new int[nprocs+1];
   sdispls[0] = 0;
   rdispls[0] = 0;
-  for(int i = 1; i < nprocs; i++){
+  for(int i = 1; i <= nprocs; i++){
     sdispls[i] = sdispls[i-1] + sendcnts[i-1];
     rdispls[i] = rdispls[i-1] + recvcnts[i-1];
     sendsize += sendcnts[i-1];
@@ -298,7 +314,6 @@ void communicate(dist_graph_t* g,
   //add labels_to_send to the sendbuf
   for(auto it = labels_to_send.begin(); it != labels_to_send.end(); it++){
     bool LCA_is_remote = get_value(g->map, *it) == NULL_KEY;
-
     for(auto it2 = LCA_procs_to_send[*it].begin(); it2 != LCA_procs_to_send[*it].end(); it2++){
       sendbuf[sendidx[*it2]++] = *it;
       if(LCA_is_remote){
@@ -310,9 +325,31 @@ void communicate(dist_graph_t* g,
       }
     }
   }
+  
+  for(int p = 0; p < nprocs; p++){
+    if(p == procid){
+      std::cout<<"Task "<<procid<<": sendbuf:\n\t";
+      for(int i = 0; i < sendsize; i++){
+        std::cout<<sendbuf[i]<<" ";
+      }
+      std::cout<<std::endl;
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
 
   //call alltoallv
   MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
+  
+  for(int p = 0; p < nprocs; p++){
+    if(p == procid){
+      std::cout<<"Task "<<procid<<": recvcnts:\n\t";
+      for(int i = 0; i < nprocs; i++){
+        std::cout<<recvcnts[i]<<" ";
+      }
+      std::cout<<std::endl;
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
 
   //on receiving end, process any vertex we can translate to an LID as a ghost,
   //and any vertex we can't as a remote LCA vertex.TODO: differentiate this better,
@@ -331,6 +368,18 @@ void communicate(dist_graph_t* g,
       remote_LCA_levels[recvbuf[i]] = recvbuf[i+2];
     }
   }
+  
+  for(int p = 0; p < nprocs; p++){
+    if(p==procid){
+      std::cout<<"Task "<<procid<<": received data, recvsize = "<<recvsize<<" :\n\t";
+      for(int i = 0; i < recvsize; i++){
+        std::cout<<recvbuf[i]<<" ";
+      }
+      std::cout<<std::endl;
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+
   verts_to_send.clear();
   labels_to_send.clear();
 }
@@ -406,8 +455,8 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	  out_degree = out_degree(g, curr_vtx);
 	  nbors = out_vertices(g, curr_vtx);
 	} else {
-	  out_degree = ghost_offsets[curr_vtx+1] - ghost_offsets[curr_vtx];
-	  nbors = &ghost_adjs[ghost_offsets[curr_vtx]];
+	  out_degree = ghost_offsets[curr_vtx+1 - g->n_local] - ghost_offsets[curr_vtx - g->n_local];
+	  nbors = &ghost_adjs[ghost_offsets[curr_vtx-g->n_local]];
 	}
         for(int nbor_idx = 0; nbor_idx < out_degree; nbor_idx++){
           pass_labels(g,curr_vtx, nbors[nbor_idx], LCA_labels, remote_LCA_labels,low_labels, 
