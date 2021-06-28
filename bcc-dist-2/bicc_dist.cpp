@@ -220,7 +220,13 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   std::vector<std::set<uint64_t>> LCA_labels(g->n_total,std::set<uint64_t>());
   //low labels are a single int.
   uint64_t* low_labels = new uint64_t[g->n_total];
-  for(uint64_t i = 0; i < g->n_total; i++) low_labels[i] = g->local_unmap[i];
+  for(uint64_t i = 0; i < g->n_total; i++) {
+    if(i < g->n_local){
+      low_labels[i] = g->local_unmap[i];
+    } else {
+      low_labels[i] = g->ghost_unmap[i-g->n_local];
+    }
+  }
  
   int* artpt_flags = new int[g->n_local];  
 
