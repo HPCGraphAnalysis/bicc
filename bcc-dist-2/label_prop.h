@@ -136,7 +136,11 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
       //trigger more reductions than necessary.
       if(!potential_artpt_did_prop_lower[curr_vtx]){
 	std::cout<<"LCA vertex "<<curr_vtx<<" passing own ID to lower neighbors\n";
-        LCA_labels[nbor].insert(g->local_unmap[curr_vtx]);
+	if(curr_vtx < g->n_local){
+          LCA_labels[nbor].insert(g->local_unmap[curr_vtx]);
+	} else {
+	  LCA_labels[nbor].insert(g->ghost_unmap[curr_vtx - g->n_local]);
+	}
 	nbor_changed = true;
       }
     }
@@ -613,7 +617,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
   }
   
   //set articulation_point_flags for the caller.
-  for(uint64_t i = 0; i < g->n_total; i++){
+  for(uint64_t i = 0; i < g->n_local; i++){
     printf("Local vertex %lu has LCA label %lu and low label %lu\n",i,*LCA_labels[i].begin(),low_labels[i]);
 
     /**

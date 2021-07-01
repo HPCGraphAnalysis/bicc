@@ -131,9 +131,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(uint64_t i = 0; i < g->n_total; i++) potential_art_pts[i] = 0;
   std::cout<<"Doing art_pt_heuristic\n"; 
   art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
+ 
   
+
   for(uint64_t i = 0; i < g->n_total; i++){
-    if(potential_art_pts[i] != 0 && i < g->n_local){
+    if(potential_art_pts[i] != 0){
       printf("Task %d: global vertex %lu (local %lu) is a potential articulation point\n",procid,g->local_unmap[i],i);
     }
   }
@@ -157,6 +159,56 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("\n");
   }
   
+  //communicate potential artpt flags if they are ghosted on a process.
+  int* potential_artpt_sendcnts = new int[nprocs];
+  int* potential_artpt_recvcnts = new int[nprocs];
+  for(int i = 0; i < nprocs; i++){
+    potential_artpt_sendcnts[i] = 0;
+    potential_artpt_recvcnts[i] = 0;
+  }
+
+  for(int i = 0; i < g->n_local; i++){
+    if(procs_to_send[i].size() > 0 && potential_art_pts[i] != 0){
+      for(auto it = procs_to_send[i].begin(); it != procs_to_send[i].end(); it++){
+        potential_artpt_sendcnts[*it] += 1;
+      }
+    }
+  }
+
+  MPI_Alltoall(potential_artpt_sendcnts, 1, MPI_INT, potential_artpt_recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+
+  int potential_artpt_sendsize = 0;
+  int potential_artpt_recvsize = 0;
+  int* potential_artpt_sdispls = new int[nprocs+1];
+  int* potential_artpt_rdispls = new int[nprocs+1];
+  potential_artpt_sdispls[0] = 0;
+  potential_artpt_rdispls[0] = 0;
+  for(int i = 1; i <= nprocs; i++){
+    potential_artpt_sdispls[i] = potential_artpt_sdispls[i-1] + potential_artpt_sendcnts[i-1];
+    potential_artpt_rdispls[i] = potential_artpt_rdispls[i-1] + potential_artpt_recvcnts[i-1];
+    potential_artpt_sendsize += potential_artpt_sendcnts[i-1];
+    potential_artpt_recvsize += potential_artpt_recvcnts[i-1];
+  }
+
+  int* potential_artpt_sendbuf = new int[potential_artpt_sendsize];
+  int* potential_artpt_recvbuf = new int[potential_artpt_recvsize];
+  int* potential_artpt_sendidx = new int[nprocs];
+  for(int i = 0; i < nprocs; i++) potential_artpt_sendidx[i] = potential_artpt_sdispls[i];
+  for(uint64_t i = 0; i < g->n_local; i++){
+    if(procs_to_send[i].size() > 0 && potential_art_pts[i] != 0){
+      for(auto it = procs_to_send[i].begin(); it != procs_to_send[i].end(); it++){
+        potential_artpt_sendbuf[potential_artpt_sendidx[*it]++] = g->local_unmap[i];
+      }
+    }
+  }
+  MPI_Alltoallv(potential_artpt_sendbuf, potential_artpt_sendcnts, potential_artpt_sdispls, MPI_INT,
+		potential_artpt_recvbuf, potential_artpt_recvcnts, potential_artpt_rdispls, MPI_INT, MPI_COMM_WORLD);
+
+  for(int i = 0; i < potential_artpt_recvsize; i++){
+    potential_art_pts[get_value(g->map, potential_artpt_recvbuf[i])] = 1;
+  }
+
+
   std::cout<<"Task "<<procid<<": setting up ghost adjacencies -- degrees\n";
   std::cout<<"Task "<<procid<<": n_ghost = "<<g->n_ghost<<"\n";
   //set degree counts for ghosts
