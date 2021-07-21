@@ -28,25 +28,41 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
       if(neighbor >= g->n_local) global_neighbor = g->ghost_unmap[global_neighbor-g->n_local];
       else global_neighbor = g->local_unmap[global_neighbor];
       uint64_t global_current = g->local_unmap[i];
-      //printf("Checking edge between %d (parent: %d) and %d (parent: %d)\n",global_current,parents[i],global_neighbor,parents[neighbor]);
+      printf("Checking edge between %d (parent: %d) and %d (parent: %d)\n",global_current,parents[i],global_neighbor,parents[neighbor]);
       if(parents[neighbor] != global_current && parents[i] != global_neighbor){
         //if the edge is partly owned by the current processor, the neighbor will be the ghosted vertex
-        if((global_current < global_neighbor) || (neighbor >= g->n_local)){
+        if((global_current < global_neighbor) || (neighbor >= g->n_local)){		
           if(levels[i] <= levels[neighbor]){
             //if neighbor is owned, this processor gets the entry
             if(neighbor < g->n_local){
-              //printf("Task %d: nontree edge found between %d and %d\n",procid,global_current,global_neighbor);
+              printf("Task %d: nontree edge found between %d and %d\n",procid,global_current,global_neighbor);
               q.push(global_current);
               q.push(global_neighbor);
               q.push(levels[i]);
               q.push(levels[neighbor]);
-              if(i < g->n_local) q.push(procid);
-              else q.push(g->ghost_tasks[i-g->n_local]);
+              q.push(procid);
               q.push(procid);
               //mark this nontree edge as visited
               //we already know i is a local vertex
+            } else {
+              //neighbor is ghosted
+	      if(levels[i] >= levels[neighbor]){
+	        //if the neighbor is at a lower numerical level (so, higher up the tree) than i, this process does not own the traversal to start
+		
+		//the only edges that make it here have levels[i] == levels[neighbor], so distinguish based on GID.
+		if(global_current < global_neighbor){
+                  printf("Task %d: nontree edge found between %d and %d\n",procid,global_current,global_neighbor);
+                  q.push(global_current);
+                  q.push(global_neighbor);
+                  q.push(levels[i]);
+                  q.push(levels[neighbor]);
+                  q.push(procid);
+                  q.push(g->ghost_tasks[neighbor-g->n_local]);
+		}
+	      }
+
               
-            }
+	    }
             for(int k = g->out_degree_list[i]; k < g->out_degree_list[i+1]; k++){
               if(g->out_edges[k] == neighbor){
                 visited_edges[k] = 1;
@@ -61,7 +77,7 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
             }
           } else {
             //we already know i is owned, i goes from 0 to g->n_local
-            //printf("Task %d: nontree edge found between %d and %d\n",procid,global_current,global_neighbor);
+            printf("Task %d: nontree edge found between %d and %d\n",procid,global_current,global_neighbor);
             q.push(global_current);
             q.push(global_neighbor);
             q.push(levels[i]);
@@ -135,7 +151,7 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
     int task2 = queue.front();
     queue.pop();
 
-    //printf("Task %d: v1: %d, v2: %d, l1: %d, l2: %d, t1: %d, t2: %d\n",procid,vertex1,vertex2,level1,level2,task1,task2);
+    printf("Task %d: v1: %d, v2: %d, l1: %d, l2: %d, t1: %d, t2: %d\n",procid,vertex1,vertex2,level1,level2,task1,task2);
     int local_vertex1 = get_value(g->map,vertex1);
     int local_vertex2 = get_value(g->map,vertex2);
     if(local_vertex1 >= 0 && local_vertex2 >= 0){
@@ -274,7 +290,7 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
     send.pop();
     int proc2 = send.front();
     send.pop();
-    //printf("Task %d sending: vertex1: %d, vertex2: %d, level1: %d, level2: %d, proc1: %d, proc2: %d\n", procid,vertex1, vertex2,level1,level2,proc1, proc2);
+    printf("Task %d sending: vertex1: %d, vertex2: %d, level1: %d, level2: %d, proc1: %d, proc2: %d\n", procid,vertex1, vertex2,level1,level2,proc1, proc2);
     
     if(proc1 != procid){ //send to proc1
       sendbuf[proc1]++;

@@ -136,7 +136,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
 
   for(uint64_t i = 0; i < g->n_total; i++){
     if(potential_art_pts[i] != 0){
-      printf("Task %d: global vertex %lu (local %lu) is a potential articulation point\n",procid,g->local_unmap[i],i);
+      if(i < g->n_local){
+        printf("Task %d: global vertex %lu (local %lu) is a potential articulation point\n",procid,g->local_unmap[i],i);
+      } else{
+        printf("Task %d: global vertex %lu (local %lu) is a potential articulation point\n",procid,g->ghost_unmap[i-g->n_local],i);
+      }
     }
   }
   

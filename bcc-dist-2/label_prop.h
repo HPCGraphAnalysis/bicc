@@ -21,10 +21,19 @@ extern bool verbose, debug, verify, output;
 bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::vector<std::set<uint64_t>>& LCA_labels,
 		   std::unordered_map<uint64_t, std::set<uint64_t>>& remote_LCA_labels,
 		   std::unordered_map<uint64_t, uint64_t>& remote_LCA_levels,
-		   std::queue<uint64_t>* prop_queue){
+		   std::queue<uint64_t>* prop_queue, std::queue<uint64_t>* irreducible_prop_queue){
    //reduce the lowest-level label until all LCA labels point to the same LCA vertex
    //std::set<uint64_t> curr_vtx_labels = LCA_labels[curr_vtx];
    bool done = false;
+  
+   for(auto it = remote_LCA_labels.begin(); it != remote_LCA_labels.end(); it++){
+     std::cout<<"Task "<<procid<<": remote LCA "<<it->first<<" has labels: ";
+     for(auto it2 = it->second.begin(); it2 != it->second.end(); it2++){
+       std::cout<<*it2<<" ";
+     }
+     std::cout<<"\n";
+   }
+
    while(!done){
      //if there's only one label, we're completely reduced.
      if(LCA_labels[curr_vtx].size() == 1){
@@ -35,7 +44,7 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
      uint64_t highest_level_gid = *LCA_labels[curr_vtx].begin();
      uint64_t highest_level = 0;
      //see if the label is remote or local, set levels accordingly
-     if(get_value(g->map, highest_level_gid) == NULL_KEY){
+     if(get_value(g->map, highest_level_gid) == NULL_KEY || get_value(g->map, highest_level_gid) >= g->n_local){
        highest_level = remote_LCA_levels[highest_level_gid];
      } else {
        highest_level = levels[ get_value(g->map, highest_level_gid) ];
@@ -45,7 +54,7 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
      for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); ++it){
        uint64_t curr_level = 0;
        //set the level correctly, depending on whether or not this is a remote LCA.
-       if(get_value(g->map, highest_level_gid) == NULL_KEY){
+       if(get_value(g->map, highest_level_gid) == NULL_KEY || get_value(g->map, highest_level_gid) >= g->n_local){
          curr_level = remote_LCA_levels[ *it ];
        } else {
          curr_level = levels[ get_value(g->map, *it) ];
@@ -57,7 +66,7 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        }
      }
      std::cout<<"\thighest level LCA label is "<<highest_level_gid<<"\n";
-     std::cout<<"\t LCA_labels["<<curr_vtx<<".size() = "<<LCA_labels[curr_vtx].size()<<"\n";
+     std::cout<<"\t LCA_labels["<<curr_vtx<<"].size() = "<<LCA_labels[curr_vtx].size()<<"\n";
      //we aren't done and we need to reduce the highest-level-valued label
      if(LCA_labels[curr_vtx].size() != 1){
        //remove the highest level label, to be replaced by its label.
@@ -65,7 +74,7 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        //look up the labels of the highest level label ID
        std::set<uint64_t> labels_of_highest_label;
        //if remote, use the remote labels
-       if(get_value(g->map, highest_level_gid) == NULL_KEY){
+       if(get_value(g->map, highest_level_gid) == NULL_KEY || get_value(g->map, highest_level_gid) >= g->n_local){
          labels_of_highest_label = remote_LCA_labels[ highest_level_gid ];
        } else { //use the local ones.
          labels_of_highest_label = LCA_labels[ get_value(g->map, highest_level_gid) ];
@@ -75,7 +84,7 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        if(labels_of_highest_label.size() != 1){
 	 //save the progress we've made, and try again later
 	 LCA_labels[curr_vtx].insert(highest_level_gid);
-         prop_queue->push(curr_vtx);
+         irreducible_prop_queue->push(curr_vtx);
 	 //report an incomplete reduction
 	 return false;
        } else {
@@ -169,9 +178,9 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
      
     //****MAY WANT TO MAKE SURE LABELS ARE REDUCED BEFORE THIS?******
     if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
-       levels[get_value(g->map,low_labels[curr_vtx])] > levels[get_value(g->map,low_labels[nbor])]
+       (levels[get_value(g->map,low_labels[curr_vtx])] > levels[get_value(g->map,low_labels[nbor])]
        || (levels[get_value(g->map,low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] && 
-	   low_labels[curr_vtx] > low_labels[nbor])){
+	   low_labels[curr_vtx] > low_labels[nbor]))){
       low_labels[nbor] = low_labels[curr_vtx];
       nbor_changed = true;
     }
@@ -189,10 +198,15 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
       //add the procs to which we're sending nbor to the procs to which we
       //need to send its labels.
       for(auto label_it = LCA_labels[nbor].begin(); label_it != LCA_labels[nbor].end(); label_it++){
+	
+        std::cout<<"*******************added label "<<*label_it<<" in the pass_labels phase\n";
+	
 	//only add ''direct'' labels to send here
 	labels_to_send.insert(*label_it);
 	//record which procs will need these verts
 	LCA_procs_to_send[*label_it].insert(procs_to_send[nbor].begin(), procs_to_send[nbor].end());
+	//also include procs that have the LCA as a ghost
+	LCA_procs_to_send[*label_it].insert(procs_to_send[*label_it].begin(), procs_to_send[*label_it].end());
       }
     }
     std::cout<<"adding "<<nbor<<" to queue\n";
@@ -225,10 +239,15 @@ void communicate(dist_graph_t* g,
       curr_label = LCA_labels[get_value(g->map, curr_LCA_GID)];
     }
 
+    if(curr_label.size() == 1){
+      final_labels_to_send.insert(*LCA_GID_it);
+    }
+
     //we exclude LCAs with multiple labels because they need reduced on their
     //owning process, remote procs can't do anything with multiple labels.
     //Also, cuts down on send sizes. TODO: does this work?
     while(curr_label.size() == 1 && *curr_label.begin() != curr_LCA_GID){
+      std::cout<<"************added label "<<*curr_label.begin()<<" in communication preprocessing\n";
       //add the LCA label to the verts to send out
       final_labels_to_send.insert(*curr_label.begin());
 
@@ -248,9 +267,26 @@ void communicate(dist_graph_t* g,
         curr_label = LCA_labels[get_value(g->map, curr_LCA_GID)];
       }
     }
-    final_labels_to_send.insert(*LCA_GID_it);
+    
   }
+  for(int p = 0; p < nprocs; p++){
+    if(p == procid){
+      std::cout<<"Task "<<procid<<": final labels to send contains:\n\t";
+      for(auto it = final_labels_to_send.begin(); it != final_labels_to_send.end(); it++){
+        std::cout<<*it<<" ";
+      }
+      std::cout<<"\n";
 
+      for(auto it = final_labels_to_send.begin(); it != final_labels_to_send.end(); it++){
+	std::cout<<"Task "<<procid<<": sending LCA "<<*it<<" to processes:\n\t";
+        for(auto it2 = LCA_procs_to_send[*it].begin(); it2 != LCA_procs_to_send[*it].end(); it2++){
+          std::cout<<*it2<<" ";
+	}
+	std::cout<<"\n";
+      }
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
 
   int* sendcnts = new int[nprocs];
   int* vertrecvcnts = new int[nprocs];
@@ -269,8 +305,9 @@ void communicate(dist_graph_t* g,
 
   MPI_Alltoall(sendcnts, 1, MPI_INT, vertrecvcnts, 1, MPI_INT, MPI_COMM_WORLD);
 
-  for(auto it = labels_to_send.begin(); it != labels_to_send.end(); it++){
+  for(auto it = final_labels_to_send.begin(); it != final_labels_to_send.end(); it++){
     for(auto it2 = LCA_procs_to_send[*it].begin(); it2 != LCA_procs_to_send[*it].end(); it2++){
+      std::cout<<"Task "<<procid<<": sending vertex "<<*it<<" to process "<<*it2<<"\n";
       sendcnts[*it2]+=3;
     }
   }
@@ -318,7 +355,7 @@ void communicate(dist_graph_t* g,
     }
   }
   //add labels_to_send to the sendbuf
-  for(auto it = labels_to_send.begin(); it != labels_to_send.end(); it++){
+  for(auto it = final_labels_to_send.begin(); it != final_labels_to_send.end(); it++){
     bool LCA_is_remote = get_value(g->map, *it) == NULL_KEY;
     for(auto it2 = LCA_procs_to_send[*it].begin(); it2 != LCA_procs_to_send[*it].end(); it2++){
       sendbuf[sendidx[*it2]++] = *it;
@@ -359,16 +396,16 @@ void communicate(dist_graph_t* g,
 
   //on receiving end, process any vertex we can translate to an LID as a ghost,
   //and any vertex we can't as a remote LCA vertex.
-  //TODO: restructure loop to use rdispls, use vertrecvcnts to see if the current entry is
-  //a ghost or a remote LCA. If index >= vertrecvcnts[ridx], its a remote LCA.
   for(int p = 0; p < nprocs; p++){
     for(int ridx = rdispls[p]; ridx < rdispls[p+1]; ridx+=3){
       //remote LCA
       if(ridx - rdispls[p] >= vertrecvcnts[p]){
+	std::cout<<"**** Received LCA vertex "<<recvbuf[ridx]<<" with label "<<recvbuf[ridx+1]<<" and level "<<recvbuf[ridx+2]<<"\n";
         remote_LCA_labels[recvbuf[ridx]].clear();
 	remote_LCA_labels[recvbuf[ridx]].insert(recvbuf[ridx+1]);
 	remote_LCA_levels[recvbuf[ridx]] = recvbuf[ridx+2]; 
       } else { //ghost
+	std::cout<<"**** Received ghost vertex "<<recvbuf[ridx]<<" with label "<<recvbuf[ridx+1]<<" and low_label "<<recvbuf[ridx+2]<<"\n";
         uint64_t lid = get_value(g->map, recvbuf[ridx]);
 	LCA_labels[lid].clear();
 	LCA_labels[lid].insert(recvbuf[ridx+1]);
@@ -404,17 +441,19 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
   std::unordered_map<uint64_t, std::set<int>> LCA_procs_to_send;
   //aliases for easy queue switching
   std::queue<uint64_t> * curr_prop_queue = &prop_queue;
-  std::queue<uint64_t> * next_prop_queue = &n_prop_queue;
+  std::queue<uint64_t> * irreducible_prop_queue = &n_prop_queue;
   bool* potential_artpt_did_prop_lower = new bool[g->n_total];
   //all vertices flagged in the LCA traversals
   //can initially start propagating.
   std::cout<<"Task "<<procid<<": starting propagations\n";
-  for(uint64_t i = 0; i < g->n_local; i++){
+  for(uint64_t i = 0; i < g->n_total; i++){
     if(potential_artpts[i] != 0) {
       prop_queue.push(i);
       if(procs_to_send[i].size() > 0){
         verts_to_send.insert(i);
+	std::cout<<"***********adding vertex "<<g->local_unmap[i]<<" to labels_to_send, it is a potential artpt\n";
 	labels_to_send.insert(g->local_unmap[i]);
+	LCA_procs_to_send[g->local_unmap[i]].insert(procs_to_send[i].begin(), procs_to_send[i].end());
       }
     }
     potential_artpt_did_prop_lower[i] = false;
@@ -422,7 +461,9 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       LCA_labels[i].insert(g->local_unmap[i]);
       if(procs_to_send[i].size() > 0){
         verts_to_send.insert(i);
+	std::cout<<"**********adding vertex "<<g->local_unmap[i]<<" to labels_to_send, it is the root\n";
 	labels_to_send.insert(g->local_unmap[i]);
+	LCA_procs_to_send[g->local_unmap[i]].insert(procs_to_send[i].begin(), procs_to_send[i].end());
       }
     }
   }
@@ -453,7 +494,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       bool full_reduce = true;
       //only call reduction on verts with more than one LCA label
       if(LCA_labels[curr_vtx].size() > 1){
-        full_reduce = reduce_labels(g, curr_vtx, levels, LCA_labels, remote_LCA_labels, remote_LCA_levels, curr_prop_queue);
+        full_reduce = reduce_labels(g, curr_vtx, levels, LCA_labels, remote_LCA_labels, remote_LCA_levels, curr_prop_queue, irreducible_prop_queue);
       }
       if(full_reduce){
         //pass LCA and low labels to neighbors,
@@ -609,11 +650,14 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
     //return;
     std::cout<<"Task "<<procid<<": done communicating... \n";
     //std::swap(curr_prop_queue, next_prop_queue);
-
+    while(irreducible_prop_queue->size() > 0){
+      curr_prop_queue->push(irreducible_prop_queue->front());
+      irreducible_prop_queue->pop();
+    }
     //if all queues are empty, the loop can be broken
     int done = curr_prop_queue->size();
     global_done = 0;
-    MPI_Allreduce(&done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); 
+    MPI_Allreduce(&done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   }
   
   //set articulation_point_flags for the caller.
