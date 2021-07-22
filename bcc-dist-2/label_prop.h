@@ -41,6 +41,15 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        break;
      }
      
+     uint64_t curr_GID = curr_vtx;
+     if(curr_vtx < g->n_local) curr_GID = g->local_unmap[curr_vtx];
+     else curr_GID = g->ghost_unmap[curr_vtx-g->n_local];
+     std::cout<<"Task "<<procid<<": vertex "<<curr_GID<<" has labels: \n\t";
+     for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+       std::cout<<*it<<" ";
+     }
+     std::cout<<"\n";
+
      uint64_t highest_level_gid = *LCA_labels[curr_vtx].begin();
      uint64_t highest_level = 0;
      //see if the label is remote or local, set levels accordingly
@@ -54,7 +63,7 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
      for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); ++it){
        uint64_t curr_level = 0;
        //set the level correctly, depending on whether or not this is a remote LCA.
-       if(get_value(g->map, highest_level_gid) == NULL_KEY || get_value(g->map, highest_level_gid) >= g->n_local){
+       if(get_value(g->map, *it) == NULL_KEY || get_value(g->map, *it) >= g->n_local){
          curr_level = remote_LCA_levels[ *it ];
        } else {
          curr_level = levels[ get_value(g->map, *it) ];
@@ -131,7 +140,10 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
         for(int i = 0; i < diff.size(); i++){
           //std::cout<<"LCA vertex "<<curr_vtx<<" giving label "<<diff[i]<<" to vertex "<<nbor<<"\n";
 	  //don't give a vertex its own label, it causes headaches in label reduction.
-          if(diff[i] != g->local_unmap[nbor]) {
+	  uint64_t nbor_gid = nbor;
+	  if(nbor < g->n_local) nbor_gid = g->local_unmap[nbor];
+	  else nbor_gid = g->ghost_unmap[nbor - g->n_local];
+          if(diff[i] != nbor_gid) {
 	    LCA_labels[nbor].insert(diff[i]);
 	    nbor_changed = true;
 	  }
@@ -169,7 +181,10 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     if(diff.size() > 0){
       for(int i = 0; i < diff.size(); i++){
 	//don't give a vertex its own label, it causes headaches in label reduction.
-        if(diff[i] != g->local_unmap[nbor]) {
+	uint64_t nbor_gid = nbor;
+	if(nbor < g->n_local) nbor_gid = g->local_unmap[nbor];
+	else nbor_gid = g->ghost_unmap[nbor - g->n_local];
+        if(diff[i] != nbor_gid) {
           LCA_labels[nbor].insert(diff[i]);
           nbor_changed = true;
 	}
@@ -658,6 +673,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
     int done = curr_prop_queue->size();
     global_done = 0;
     MPI_Allreduce(&done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    //while(true){}
   }
   
   //set articulation_point_flags for the caller.
