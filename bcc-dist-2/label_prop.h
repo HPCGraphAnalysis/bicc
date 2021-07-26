@@ -93,6 +93,37 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        if(labels_of_highest_label.size() != 1){
 	 //save the progress we've made, and try again later
 	 LCA_labels[curr_vtx].insert(highest_level_gid);
+	 if(get_value(g->map, highest_level_gid) < g->n_local){
+	   //this could possibly be reduced, if the highest-level label is still owned
+	   bool highest_label_is_reducible = true;
+	   uint64_t highest_label_of_highest_labels = *labels_of_highest_label.begin();
+	   uint64_t highest_level_of_highest_labels = 0;
+	   if(get_value(g->map, highest_label_of_highest_labels) == NULL_KEY || get_value(g->map, highest_label_of_highest_labels) >= g->n_local){
+	     highest_level_of_highest_labels = remote_LCA_levels[highest_level_gid];
+	   } else {
+	     highest_level_of_highest_labels = levels[get_value(g->map, highest_level_of_highest_labels)];
+	   }
+
+	   for(auto it = labels_of_highest_label.begin(); it != labels_of_highest_label.end(); it++){
+	     uint64_t curr_level = 0;
+	     if(get_value(g->map, *it) == NULL_KEY || get_value(g->map, *it) >= g->n_local){
+	       curr_level = remote_LCA_levels[*it];
+	     } else {
+	       curr_level = levels[get_value(g->map, *it)];
+	     }
+
+	     if(curr_level > highest_level_of_highest_labels){
+	       highest_label_of_highest_labels = *it;
+	       highest_level_of_highest_labels = curr_level;
+	     }
+	   }
+	   if(get_value(g->map, highest_label_of_highest_labels) < g->n_local){
+	     prop_queue->push(curr_vtx);
+	   } else{
+	     irreducible_prop_queue->push(curr_vtx);
+	   }
+	   return false;
+	 }
          irreducible_prop_queue->push(curr_vtx);
 	 //report an incomplete reduction
 	 return false;
@@ -127,7 +158,21 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
   //
   //if nbor was updated, add to prop_queue
   bool nbor_changed = false;
-  
+
+  if(nbor == 30  || nbor == 19 || nbor == 22 || nbor == 23 || nbor == 26 || nbor == 27){
+    std::cout<<"vertex "<<curr_vtx<<" has LCA label {";
+    for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+      std::cout<<*it<<" ";
+    }
+    std::cout<<"}, and low label "<<low_labels[curr_vtx]<<"\n";
+    std::cout<<"vertex "<<nbor<<" has LCA label {";
+    for(auto it = LCA_labels[nbor].begin(); it != LCA_labels[nbor].end(); it++){
+      std::cout<<*it<<" ";
+    }
+    std::cout<<"}, and low label "<<low_labels[nbor]<<"\n";
+
+  }
+
   if(potential_artpts[curr_vtx] != 0){
     if(levels[nbor] <= levels[curr_vtx]){
       //see if curr_vtx has any labels that nbor doesn't
@@ -167,9 +212,15 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     }
     //pass low_label to neighbor if LCA_labels are the same, and if it is lower.
     //****MAY WANT TO MAKE SURE LABELS ARE REDUCED BEFORE THIS?******
+    uint64_t curr_gid = curr_vtx;
+    if(curr_vtx < g->n_local) curr_gid = g->local_unmap[curr_vtx];
+    else curr_gid = g->ghost_unmap[curr_vtx-g->n_local];
+
     if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
-       levels[nbor] <= levels[curr_vtx] &&
-       levels[get_value(g->map,low_labels[curr_vtx])] >  levels[get_value(g->map, low_labels[nbor])]){
+       (levels[nbor] <= levels[curr_vtx] || *LCA_labels[nbor].begin() != curr_gid) &&
+       (levels[get_value(g->map,low_labels[curr_vtx])] > levels[get_value(g->map, low_labels[nbor])] || 
+	levels[get_value(g->map,low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] && 
+	low_labels[curr_vtx] > low_labels[nbor])){
       low_labels[nbor] = low_labels[curr_vtx];
       nbor_changed = true;
     }
@@ -692,7 +743,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       int out_degree = out_degree(g, i);
       uint64_t* nbors = out_vertices(g, i);
       for(int nbor = 0; nbor < out_degree; nbor++){
-        if(LCA_labels[i] != LCA_labels[nbors[nbor]] || low_labels[i] != low_labels[nbors[nbor]]){
+        if(levels[i] < levels[nbor] && (LCA_labels[i] != LCA_labels[nbors[nbor]] || low_labels[i] != low_labels[nbors[nbor]])){
 	  articulation_point_flags[i] = 1;
 	}
       }
