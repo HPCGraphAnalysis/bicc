@@ -80,7 +80,6 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   for (int32_t i = 0; i < nprocs; ++i)
     comm->sendcounts_temp[i] = 0;
 
-  uint64_t level = 0;
   comm->global_queue_size = 1;
 #pragma omp parallel default(shared)
 {

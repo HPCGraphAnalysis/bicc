@@ -95,7 +95,6 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
 	 LCA_labels[curr_vtx].insert(highest_level_gid);
 	 if(get_value(g->map, highest_level_gid) < g->n_local){
 	   //this could possibly be reduced, if the highest-level label is still owned
-	   bool highest_label_is_reducible = true;
 	   uint64_t highest_label_of_highest_labels = *labels_of_highest_label.begin();
 	   uint64_t highest_level_of_highest_labels = 0;
 	   if(get_value(g->map, highest_label_of_highest_labels) == NULL_KEY || get_value(g->map, highest_label_of_highest_labels) >= g->n_local){
@@ -182,7 +181,7 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
 			  std::inserter(diff, diff.begin()));
       //if so, pass missing IDs to nbor
       if(diff.size() > 0){
-        for(int i = 0; i < diff.size(); i++){
+        for(size_t i = 0; i < diff.size(); i++){
           //std::cout<<"LCA vertex "<<curr_vtx<<" giving label "<<diff[i]<<" to vertex "<<nbor<<"\n";
 	  //don't give a vertex its own label, it causes headaches in label reduction.
 	  uint64_t nbor_gid = nbor;
@@ -219,8 +218,8 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
        (levels[nbor] <= levels[curr_vtx] || *LCA_labels[nbor].begin() != curr_gid) &&
        (levels[get_value(g->map,low_labels[curr_vtx])] > levels[get_value(g->map, low_labels[nbor])] || 
-	levels[get_value(g->map,low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] && 
-	low_labels[curr_vtx] > low_labels[nbor])){
+	(levels[get_value(g->map,low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] && 
+	low_labels[curr_vtx] > low_labels[nbor]))){
       low_labels[nbor] = low_labels[curr_vtx];
       nbor_changed = true;
     }
@@ -230,7 +229,7 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
 		        LCA_labels[nbor].begin(), LCA_labels[nbor].end(),
 			std::inserter(diff, diff.begin()));
     if(diff.size() > 0){
-      for(int i = 0; i < diff.size(); i++){
+      for(size_t i = 0; i < diff.size(); i++){
 	//don't give a vertex its own label, it causes headaches in label reduction.
 	uint64_t nbor_gid = nbor;
 	if(nbor < g->n_local) nbor_gid = g->local_unmap[nbor];
@@ -594,12 +593,12 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       if(p == procid){
 	
         std::cout<<"Task "<<p<<": owned gids:\n\t";
-        for(int i = 0; i < g->n_local; i++){
+        for(uint64_t i = 0; i < g->n_local; i++){
 	  std::cout<<g->local_unmap[i]<<" ";
 	}
 	std::cout<<"\n";
         std::cout<<"Task "<<p<<": owned LCA_labels:\n\t";
-        for(int i = 0; i < g->n_local; i++){
+        for(uint64_t i = 0; i < g->n_local; i++){
 	  std::cout<<"{";
 	  for(auto it = LCA_labels[i].begin(); it != LCA_labels[i].end(); it++){
 	    std::cout<<*it<<" ";
@@ -609,19 +608,19 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	std::cout<<"\n";
 
 	std::cout<<"Task "<<p<<": owned low labels:\n\t";
-	for(int i = 0; i < g->n_local; i++){
+	for(uint64_t i = 0; i < g->n_local; i++){
 	  std::cout<<low_labels[i]<<" ";
 	}
 	std::cout<<"\n";
 
         std::cout<<"Task "<<p<<": ghost gids:\n\t";
-	for(int i = 0; i < g->n_ghost; i++){
+	for(uint64_t i = 0; i < g->n_ghost; i++){
 	  std::cout<<g->ghost_unmap[i]<<" ";
 	}
 	std::cout<<"\n";
 
         std::cout<<"Task "<<p<<": ghost LCA_labels:\n\t";
-	for(int i = 0; i < g->n_ghost; i++){
+	for(uint64_t i = 0; i < g->n_ghost; i++){
 	  std::cout<<"{";
 	  for(auto it =LCA_labels[i+g->n_local].begin(); it != LCA_labels[i+g->n_local].end(); it++){
 	    std::cout<<*it<<" ";
@@ -631,7 +630,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	std::cout<<"\n";
 
 	std::cout<<"Task "<<p<<": ghost low labels:\n\t";
-	for(int i = 0; i < g->n_ghost; i++){
+	for(uint64_t i = 0; i < g->n_ghost; i++){
 	  std::cout<<low_labels[i+g->n_local]<<" ";
 	}
 	std::cout<<"\n";
@@ -658,12 +657,12 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       if(p == procid){
 	
         std::cout<<"Task "<<p<<": owned gids:\n\t";
-        for(int i = 0; i < g->n_local; i++){
+        for(uint64_t i = 0; i < g->n_local; i++){
 	  std::cout<<g->local_unmap[i]<<" ";
 	}
 	std::cout<<"\n";
         std::cout<<"Task "<<p<<": owned LCA_labels:\n\t";
-        for(int i = 0; i < g->n_local; i++){
+        for(uint64_t i = 0; i < g->n_local; i++){
 	  std::cout<<"{";
 	  for(auto it = LCA_labels[i].begin(); it != LCA_labels[i].end(); it++){
 	    std::cout<<*it<<" ";
@@ -673,19 +672,19 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	std::cout<<"\n";
 
 	std::cout<<"Task "<<p<<": owned low labels:\n\t";
-	for(int i = 0; i < g->n_local; i++){
+	for(uint64_t i = 0; i < g->n_local; i++){
 	  std::cout<<low_labels[i]<<" ";
 	}
 	std::cout<<"\n";
 
         std::cout<<"Task "<<p<<": ghost gids:\n\t";
-	for(int i = 0; i < g->n_ghost; i++){
+	for(uint64_t i = 0; i < g->n_ghost; i++){
 	  std::cout<<g->ghost_unmap[i]<<" ";
 	}
 	std::cout<<"\n";
 
         std::cout<<"Task "<<p<<": ghost LCA_labels:\n\t";
-	for(int i = 0; i < g->n_ghost; i++){
+	for(uint64_t i = 0; i < g->n_ghost; i++){
 	  std::cout<<"{";
 	  for(auto it =LCA_labels[i+g->n_local].begin(); it != LCA_labels[i+g->n_local].end(); it++){
 	    std::cout<<*it<<" ";
@@ -695,7 +694,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	std::cout<<"\n";
 
 	std::cout<<"Task "<<p<<": ghost low labels:\n\t";
-	for(int i = 0; i < g->n_ghost; i++){
+	for(uint64_t i = 0; i < g->n_ghost; i++){
 	  std::cout<<low_labels[i+g->n_local]<<" ";
 	}
 	std::cout<<"\n";

@@ -94,7 +94,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("Doing BCC-Color BFS stage\n");
   }
 
- for(int i = 0; i < g->n_local; i++){
+ for(uint64_t i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
     printf("Task %d: global %lu (local %lu) neighbors:\n\t",procid,g->local_unmap[i],i);
@@ -109,13 +109,13 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   MPI_Barrier(MPI_COMM_WORLD);
   
-  for(int i = 0; i < g->n_local; i++){
+  for(uint64_t i = 0; i < g->n_local; i++){
     int curr_global = g->local_unmap[i];
-    printf("vertex %d, parent: %d, level: %d\n",curr_global, parents[i], levels[i]);
+    printf("vertex %d, parent: %ld, level: %ld\n",curr_global, parents[i], levels[i]);
   }
-  for(int i = 0; i < g->n_ghost; i++){
+  for(uint64_t i = 0; i < g->n_ghost; i++){
     int curr = g->n_local + i;
-    printf("vertex %d, parent: %d, level: %d\n",g->ghost_unmap[i], parents[curr], levels[curr]);
+    printf("vertex %ld, parent: %ld, level: %ld\n",g->ghost_unmap[i], parents[curr], levels[curr]);
   }
   
   if (verbose) {
@@ -171,7 +171,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     potential_artpt_recvcnts[i] = 0;
   }
 
-  for(int i = 0; i < g->n_local; i++){
+  for(uint64_t i = 0; i < g->n_local; i++){
     if(procs_to_send[i].size() > 0 && potential_art_pts[i] != 0){
       for(auto it = procs_to_send[i].begin(); it != procs_to_send[i].end(); it++){
         potential_artpt_sendcnts[*it] += 1;
@@ -218,10 +218,10 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //set degree counts for ghosts
   std::vector<uint64_t> ghost_degrees(g->n_ghost, 0);
   uint64_t ghost_adjs_total = 0;
-  for(int i = 0; i < g->n_local; i++){
+  for(uint64_t i = 0; i < g->n_local; i++){
     uint64_t degree = out_degree(g, i);
     uint64_t* nbors = out_vertices(g, i);
-    for(int j = 0; j < degree; j++){
+    for(uint64_t j = 0; j < degree; j++){
       if(nbors[j] >= g->n_local) {
 	std::cout<<"Task "<<procid<<": found vertex "<<g->ghost_unmap[nbors[j]-g->n_local]<<"\n";
         ghost_degrees[nbors[j] - g->n_local]++;
@@ -230,7 +230,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }
   for(int p = 0; p < nprocs; p++){
     if(p == procid){
-      for(int i = 0; i < ghost_degrees.size(); i++){
+      for(size_t i = 0; i < ghost_degrees.size(); i++){
         std::cout<<"Task "<<procid<<": ghost vertex "<<g->ghost_unmap[i]<<" (local "<<i+g->n_local<<") has degree "<<ghost_degrees[i]<<"\n";
       }
     }
@@ -238,15 +238,15 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }
   std::cout<<"Task "<<procid<<": setting up ghost adjacencies -- offsets\n";
   std::vector<uint64_t> ghost_offsets(g->n_ghost+1,0);
-  for(int i = 1; i < g->n_ghost+1; i++){
+  for(uint64_t i = 1; i < g->n_ghost+1; i++){
     ghost_offsets[i] = ghost_offsets[i-1] + ghost_degrees[i-1];
     ghost_adjs_total += ghost_degrees[i-1];
   }
   std::vector<uint64_t> ghost_adjs(ghost_adjs_total, 0);
-  for(int i = 0; i < ghost_degrees.size(); i++) ghost_degrees[i] = 0;
+  for(size_t i = 0; i < ghost_degrees.size(); i++) ghost_degrees[i] = 0;
   
   std::cout<<"Task "<<procid<<": setting up ghost adjacencies -- adjs\n";
-  for(int i = 0; i < g->n_local; i++){
+  for(uint64_t i = 0; i < g->n_local; i++){
     uint64_t degree = out_degree(g, i);
     uint64_t* nbors = out_vertices(g, i);
     for(uint64_t j = 0; j < degree; j++){
@@ -259,9 +259,9 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   std::cout<<"Task "<<procid<<": done constructing ghost adjs\n";
   for(int p = 0; p < nprocs; p++){
     if(p == procid){
-      for(int i = 0; i < g->n_ghost; i++){
+      for(uint64_t i = 0; i < g->n_ghost; i++){
         std::cout<<"Task "<<procid<<": ghost vertex "<<g->ghost_unmap[i]<<" (local "<<i+g->n_local<<") neighbors\n\t";
-        for(int j = ghost_offsets[i]; j < ghost_offsets[i+1]; j++){
+        for(uint64_t j = ghost_offsets[i]; j < ghost_offsets[i+1]; j++){
 	  std::cout<<g->local_unmap[ghost_adjs[j]]<<" (local "<<ghost_adjs[j]<<") ";
 	}
 	std::cout<<"\n";
@@ -271,7 +271,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }
   
   //define the largest possible unsigned int as a sentinel value
-  uint64_t max_val = std::numeric_limits<uint64_t>::max();
+  //uint64_t max_val = std::numeric_limits<uint64_t>::max();
   //LCA labels are a vector of vectors.
   std::vector<std::set<uint64_t>> LCA_labels(g->n_total,std::set<uint64_t>());
   //low labels are a single int.

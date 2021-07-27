@@ -90,9 +90,9 @@ inline void init_queue_lca(dist_graph_t* g, lca_queue_data_t* lcaq){
   lcaq->queue_next = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
   lcaq->finish = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
   
-  uint64_t* queue;
+  /*uint64_t* queue;
   uint64_t* queue_next;
-  uint64_t* finish;
+  uint64_t* finish;*/
   if (lcaq->queue == NULL || lcaq->queue_next == NULL || lcaq->finish == NULL)
     throw_err("init_queue_lca(), unable to allocate resources\n",procid);
   
