@@ -228,13 +228,34 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     if(curr_vtx < g->n_local) curr_gid = g->local_unmap[curr_vtx];
     else curr_gid = g->ghost_unmap[curr_vtx-g->n_local];
 
-    if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
+    /*if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
        (levels[nbor] <= levels[curr_vtx] || *LCA_labels[nbor].begin() != curr_gid) &&
        (levels[get_value(g->map,low_labels[curr_vtx])] > levels[get_value(g->map, low_labels[nbor])] || 
 	(levels[get_value(g->map,low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] && 
-	low_labels[curr_vtx] > low_labels[nbor]))){
-      low_labels[nbor] = low_labels[curr_vtx];
-      nbor_changed = true;
+	low_labels[curr_vtx] > low_labels[nbor]))){*/
+    if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
+		    (levels[nbor] <= levels[curr_vtx] || *LCA_labels[nbor].begin() != curr_gid)){
+      uint64_t curr_low_label = low_labels[curr_vtx];
+      uint64_t nbor_low_label = low_labels[nbor];
+      uint64_t curr_low_label_level = 0;
+      if(get_value(g->map, curr_low_label) == NULL_KEY){
+        curr_low_label_level = remote_LCA_levels[curr_low_label];
+      } else {
+        curr_low_label_level = levels[get_value(g->map, curr_low_label)];
+      }
+      uint64_t nbor_low_label_level = 0;
+      if(get_value(g->map, nbor_low_label) == NULL_KEY){
+        nbor_low_label_level = remote_LCA_levels[nbor_low_label];
+      } else {
+        nbor_low_label_level = levels[get_value(g->map,nbor_low_label)];
+      }
+      
+      if(curr_low_label_level > nbor_low_label_level ||
+		      (curr_low_label_level == nbor_low_label_level && curr_low_label > nbor_low_label)){
+        
+        low_labels[nbor] = low_labels[curr_vtx];
+        nbor_changed = true;
+      }
     }
   } else {
     std::vector<uint64_t> diff;
@@ -631,13 +652,35 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	  for(int nbor_idx = 0; nbor_idx < out_degree; nbor_idx++){
 	    uint64_t nbor = nbors[nbor_idx];
 	    //check low label of nbor
-	    if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
+	    /*if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
 	       (levels[get_value(g->map,low_labels[curr_vtx])] < levels[get_value(g->map,low_labels[nbor])] ||
 		 (levels[get_value(g->map, low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] &&
 		 low_labels[curr_vtx] < low_labels[nbor]))){
 	      low_labels[curr_vtx] = low_labels[nbor];
 	      curr_changed = true;
-	    }
+	    }*/
+            if(LCA_labels[curr_vtx] == LCA_labels[nbor]){
+              uint64_t curr_low_label = low_labels[curr_vtx];
+              uint64_t nbor_low_label = low_labels[nbor];
+              uint64_t curr_low_label_level = 0;
+              if(get_value(g->map, curr_low_label) == NULL_KEY){
+                curr_low_label_level = remote_LCA_levels[curr_low_label];
+              } else {
+                curr_low_label_level = levels[get_value(g->map, curr_low_label)];
+              }
+              uint64_t nbor_low_label_level = 0;
+              if(get_value(g->map, nbor_low_label) == NULL_KEY){
+                nbor_low_label_level = remote_LCA_levels[nbor_low_label];
+              } else {
+                nbor_low_label_level = levels[get_value(g->map, nbor_low_label)];
+              }
+              
+              if(curr_low_label_level < nbor_low_label_level || 
+                  (curr_low_label_level == nbor_low_label_level && curr_low_label < nbor_low_label)){
+                low_labels[curr_vtx] = low_labels[nbor];
+                curr_changed = true;
+              }
+            }
 	  }
 	  if(curr_changed && procs_to_send[curr_vtx].size() > 0){
 	    //send curr_vtx & labels to remotes if reduction happened and low label updated
