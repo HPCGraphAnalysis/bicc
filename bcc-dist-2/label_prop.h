@@ -870,7 +870,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       int out_degree = out_degree(g, i);
       uint64_t* nbors = out_vertices(g, i);
       for(int nbor = 0; nbor < out_degree; nbor++){
-        if(levels[i] < levels[nbor] && (LCA_labels[i] != LCA_labels[nbors[nbor]] || low_labels[i] != low_labels[nbors[nbor]])){
+        if(levels[i] < levels[nbors[nbor]] && (LCA_labels[i] != LCA_labels[nbors[nbor]] || low_labels[i] != low_labels[nbors[nbor]])){
 	  articulation_point_flags[i] = 1;
 	}
       }
