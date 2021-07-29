@@ -250,6 +250,11 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
         nbor_low_label_level = levels[get_value(g->map,nbor_low_label)];
       }
       
+      if(procid == 0 && curr_gid == 8 && g->local_unmap[nbor] == 4){
+        std::cout<<"******************vertex 8 is looking at vertex 4******************\n";
+        std::cout<<"\tvertex 8 has low label "<<curr_low_label<<" which is level "<<curr_low_label_level<<"\n";
+	std::cout<<"\tvertex 4 has low label "<<nbor_low_label<<" which is level "<<nbor_low_label_level<<"\n";
+      }
       if(curr_low_label_level > nbor_low_label_level ||
 		      (curr_low_label_level == nbor_low_label_level && curr_low_label > nbor_low_label)){
         
@@ -630,6 +635,14 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       //only call reduction on verts with more than one LCA label
       if(reduction_needed){
         full_reduce = reduce_labels(g, curr_vtx, levels, LCA_labels, remote_LCA_labels, remote_LCA_levels, curr_prop_queue, irreducible_prop_queue);
+	if(full_reduce && procs_to_send[curr_vtx].size() > 0){
+	  verts_to_send.insert(curr_vtx);
+	  for(auto label_it = LCA_labels[curr_vtx].begin(); label_it != LCA_labels[curr_vtx].end(); label_it++){
+	    labels_to_send.insert(*label_it);
+	    LCA_procs_to_send[*label_it].insert(procs_to_send[curr_vtx].begin(), procs_to_send[curr_vtx].end());
+	    LCA_procs_to_send[*label_it].insert(procs_to_send[*label_it].begin(), procs_to_send[*label_it].end());
+	  }
+	}
       }
       //pull low labels (reductions can happen fairly late in the game)
       //push all labels from curr_vtx to neighbors
@@ -651,15 +664,8 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	  bool curr_changed = false;
 	  for(int nbor_idx = 0; nbor_idx < out_degree; nbor_idx++){
 	    uint64_t nbor = nbors[nbor_idx];
-	    //check low label of nbor
-	    /*if(LCA_labels[curr_vtx] == LCA_labels[nbor] &&
-	       (levels[get_value(g->map,low_labels[curr_vtx])] < levels[get_value(g->map,low_labels[nbor])] ||
-		 (levels[get_value(g->map, low_labels[curr_vtx])] == levels[get_value(g->map,low_labels[nbor])] &&
-		 low_labels[curr_vtx] < low_labels[nbor]))){
-	      low_labels[curr_vtx] = low_labels[nbor];
-	      curr_changed = true;
-	    }*/
-            if(LCA_labels[curr_vtx] == LCA_labels[nbor]){
+            
+	    if(LCA_labels[curr_vtx] == LCA_labels[nbor]){
               uint64_t curr_low_label = low_labels[curr_vtx];
               uint64_t nbor_low_label = low_labels[nbor];
               uint64_t curr_low_label_level = 0;
@@ -690,6 +696,8 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 	      LCA_procs_to_send[*label_it].insert(procs_to_send[curr_vtx].begin(), procs_to_send[curr_vtx].end());
 	      LCA_procs_to_send[*label_it].insert(procs_to_send[*label_it].begin(), procs_to_send[*label_it].end());
 	    }
+            labels_to_send.insert(low_labels[curr_vtx]);
+            LCA_procs_to_send[low_labels[curr_vtx]].insert(procs_to_send[curr_vtx].begin(), procs_to_send[curr_vtx].end());
 	  }
 	}
 
@@ -848,7 +856,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
   
   //set articulation_point_flags for the caller.
   for(uint64_t i = 0; i < g->n_local; i++){
-    printf("Local vertex %lu has LCA label %lu and low label %lu\n",i,*LCA_labels[i].begin(),low_labels[i]);
+    printf("Vertex %lu has LCA label %lu and low label %lu\n",g->local_unmap[i],*LCA_labels[i].begin(),low_labels[i]);
 
     /**
      * NOTE: I'm not entirely sure this translation of labels to articulation points holds in all cases.
