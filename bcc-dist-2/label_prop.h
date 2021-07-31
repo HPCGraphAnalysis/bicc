@@ -80,14 +80,14 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        } else {
          curr_level = levels[ get_value(g->map, *it) ];
        }
-
+       std::cout<<"\t vertex "<<*it<<" has level "<<curr_level<<"\n";
        if(curr_level > highest_level){
          highest_level_gid = *it;
 	 highest_level = curr_level;
        }
      }
      std::cout<<"\thighest level LCA label is "<<highest_level_gid<<"\n";
-     std::cout<<"\t LCA_labels["<<curr_vtx<<"].size() = "<<LCA_labels[curr_vtx].size()<<"\n";
+     std::cout<<"\tLCA_labels["<<curr_vtx<<"].size() = "<<LCA_labels[curr_vtx].size()<<"\n";
      //we aren't done and we need to reduce the highest-level-valued label
      if(LCA_labels[curr_vtx].size() != 1){
        //remove the highest level label, to be replaced by its label.
@@ -100,9 +100,16 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        } else { //use the local ones.
          labels_of_highest_label = LCA_labels[ get_value(g->map, highest_level_gid) ];
        }
-       std::cout<<"\t labels_of_highest_label.size() = "<<labels_of_highest_label.size()<<"\n";
+       std::cout<<"\tlabels_of_highest_label.size() = "<<labels_of_highest_label.size()<<"\n";
        //if it has zero or multiple labels, we can't currently use it.
-       if(labels_of_highest_label.size() != 1){
+       uint64_t level_of_labels_of_highest_label = 0;
+       if(get_value(g->map, *labels_of_highest_label.begin()) == NULL_KEY || get_value(g->map, *labels_of_highest_label.begin()) >= g->n_local){
+         level_of_labels_of_highest_label = remote_LCA_levels[*labels_of_highest_label.begin()];
+       } else {
+         level_of_labels_of_highest_label = levels[*labels_of_highest_label.begin()];
+       }
+       std::cout<<"\tlevel_of_labels_of_highest_label = "<<level_of_labels_of_highest_label<<"\n";
+       if(labels_of_highest_label.size() != 1 || (labels_of_highest_label.size() == 1 && highest_level <= level_of_labels_of_highest_label)){
 	 //save the progress we've made, and try again later
 	 LCA_labels[curr_vtx].insert(highest_level_gid);
 	 if(get_value(g->map, highest_level_gid) < g->n_local){
@@ -130,22 +137,31 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
 	   }
 	   if(get_value(g->map, highest_label_of_highest_labels) < g->n_local){
 	     prop_queue->push(curr_vtx);
+	     std::cout<<"\thighest label is local and unreduced, resubmit to local queue\n";
 	   } else{
 	     irreducible_prop_queue->push(curr_vtx);
+	     std::cout<<"\thighest label is ghost and unreduced, wait until communication to retry\n";
 	   }
 	   return false;
 	 }
          irreducible_prop_queue->push(curr_vtx);
+	 std::cout<<"\thighest label has two labels or zero labels, and is a ghost, wait for comm.\n";
 	 //report an incomplete reduction
 	 return false;
        } else {
 	 //update the label in curr_vtx.
          LCA_labels[curr_vtx].insert(*labels_of_highest_label.begin());
+	 std::cout<<"\tlabel has been reduced, new label is {";
+	 for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+	   std::cout<<*it<<" ";
+	 }
+	 std::cout<<"\n";
        }
      }
    }
    
    //if we get here, reduction was successful.
+   std::cout<<"\t***label has been fully reduced!\n";
    return true;
 }
 
