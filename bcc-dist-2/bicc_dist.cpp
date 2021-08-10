@@ -143,7 +143,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       }
     }
   }
-  
+   
   std::unordered_map<uint64_t, std::set<int>> procs_to_send;
   
   for(uint64_t i = 0; i < g->n_local; i++){
@@ -285,6 +285,15 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }
  
   int* artpt_flags = new int[g->n_local];  
+
+  /*std::cout<<"vertex 736526 (level "<<levels[736526]<<") has parent "<<parents[736526]<<"(level "<<levels[parents[736526]]<<"), which has parent"<<parents[parents[736526]]<<" (level"<<levels[parents[parents[736526]]]<<"), which has parent "<<parents[parents[parents[736526]]]<<" (level "<<levels[parents[parents[parents[736526]]]]<<")\n";
+  if(potential_art_pts[parents[736526]] != 0) std::cout<<"vertex "<<parents[736526]<<" is an LCA\n";
+  if(potential_art_pts[parents[parents[736526]]] != 0) std::cout<<"vertex "<<parents[parents[736526]]<<" is an LCA\n";
+  if(potential_art_pts[parents[parents[parents[736526]]]] != 0) std::cout<<"vertex "<<parents[parents[parents[736526]]]<<" is an LCA\n";
+  std::cout<<"vertex 22459 (level "<<levels[22459]<<" has parent "<<parents[22459]<<"(level "<<levels[parents[22459]]<<", which has parent"<<parents[parents[22459]]<<" (level "<<levels[parents[parents[22459]]]<<"\n";
+  if(potential_art_pts[parents[22459]] != 0) std::cout<<"vertex "<<parents[22459]<<" is an LCA\n";
+  if(potential_art_pts[parents[parents[22459]]]!= 0) std::cout<<"vertex "<<parents[parents[22459]]<<" is an LCA\n";
+  exit(0);*/
 
   bcc_bfs_prop_driver(g, ghost_offsets,ghost_adjs, potential_art_pts, LCA_labels, 
 		      low_labels, levels,artpt_flags,
