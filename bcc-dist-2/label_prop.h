@@ -271,8 +271,8 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     }
   } else {
     //for non-LCA verts, only pass labels if
-    if((levels[nbor] > levels[curr_vtx] && LCA_labels[nbor].size() == 0) || // the neighbor is lower and has no labels, or
-       (levels[nbor] <= levels[curr_vtx] && full_reduce && reduction_needed)){ //the neighbor is higher and the current label was recently reduced.
+    if((levels[nbor] > levels[curr_vtx] /*&& LCA_labels[nbor].size() == 0*/) || // the neighbor is lower and has no labels, or
+       (levels[nbor] <= levels[curr_vtx] && full_reduce /*&& reduction_needed*/)){ //the neighbor is higher and the current label was recently reduced.
       std::vector<uint64_t> diff;
       std::set_difference(LCA_labels[curr_vtx].begin(), LCA_labels[curr_vtx].end(),
           	        LCA_labels[nbor].begin(), LCA_labels[nbor].end(),
@@ -1043,6 +1043,21 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
     if(known_artpts[i] == 1 && articulation_point_flags[i] == 1) correct_answers++;
   }
   std::cout<<"correct: "<<correct_answers<<" false_positives: "<<false_positives<<" false_negatives: "<<false_negatives<<"\n";
+  /*uint64_t vertex = 617362;
+  std::cout<<"vertex "<<vertex<<" has LCA label "<<*LCA_labels[vertex].begin()<<", low label "<<low_labels[vertex]<<" and level "<<levels[vertex];
+  if(potential_artpts[vertex] != 0){
+    std::cout<<" and is an LCA vertex, which neighbors:\n\t";
+  } else std::cout<<" neighbors:\n\t";
+
+  uint64_t vertex_out_degree = out_degree(g, vertex);
+  uint64_t* vertex_nbors = out_vertices(g, vertex);
+  for(uint64_t i = 0; i < vertex_out_degree; i++){
+    std::cout<<"vertex "<<vertex_nbors[i]<<" has LCA label "<<*LCA_labels[vertex_nbors[i]].begin()<<", low label "<<low_labels[vertex_nbors[i]]<<" and level "<<levels[vertex_nbors[i]];
+    if(potential_artpts[vertex_nbors[i]] != 0){
+      std::cout<<" and is an LCA vertex\n\t";
+    } else std::cout<<"\n\t";
+  }
+  std::cout<<"\n";*/
   while(true);
 }
 
