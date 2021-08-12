@@ -219,14 +219,20 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
       //of the label, because reductions may eliminate the ID of this
       //LCA from its lower neighbors' labels. re-adding this label later would
       //trigger more reductions than necessary.
-      if(!potential_artpt_did_prop_lower[curr_vtx]){
+      if(!potential_artpt_did_prop_lower[curr_vtx] || full_reduce && reduction_needed){
 	//std::cout<<"LCA vertex "<<curr_vtx<<" passing own ID to lower neighbors\n";
 	if(curr_vtx < g->n_local){
-          LCA_labels[nbor].insert(g->local_unmap[curr_vtx]);
+	  if(LCA_labels[nbor].count(g->local_unmap[curr_vtx]) == 0){
+            LCA_labels[nbor].insert(g->local_unmap[curr_vtx]);
+	    nbor_changed = true;
+	  }
 	} else {
-	  LCA_labels[nbor].insert(g->ghost_unmap[curr_vtx - g->n_local]);
+	  if(LCA_labels[nbor].count(g->ghost_unmap[curr_vtx - g->n_local]) == 0){
+	    LCA_labels[nbor].insert(g->ghost_unmap[curr_vtx - g->n_local]);
+	    nbor_changed = true;
+	  }
 	}
-	nbor_changed = true;
+	//nbor_changed = true;
       }
     }
     //pass low_label to neighbor if LCA_labels are the same, and if it is lower.
@@ -590,6 +596,23 @@ void communicate(dist_graph_t* g,
   verts_to_send.clear();
   labels_to_send.clear();
   labels_to_send.insert(labels_to_send_later.begin(), labels_to_send_later.end());
+}
+
+void print_labels(dist_graph_t *g, uint64_t vertex, std::vector<std::set<uint64_t>> LCA_labels, uint64_t* low_labels, uint64_t* potential_artpts, uint64_t* levels){
+  std::cout<<"vertex "<<vertex<<" has LCA label "<<*LCA_labels[vertex].begin()<<", low label "<<low_labels[vertex]<<" and level "<<levels[vertex];
+  if(potential_artpts[vertex] != 0){
+    std::cout<<" and is an LCA vertex, which neighbors:\n\t";
+  } else std::cout<<" neighbors:\n\t";
+
+  uint64_t vertex_out_degree = out_degree(g, vertex);
+  uint64_t* vertex_nbors = out_vertices(g, vertex);
+  for(uint64_t i = 0; i < vertex_out_degree; i++){
+    std::cout<<"vertex "<<vertex_nbors[i]<<" has LCA label "<<*LCA_labels[vertex_nbors[i]].begin()<<", low label "<<low_labels[vertex_nbors[i]]<<" and level "<<levels[vertex_nbors[i]];
+    if(potential_artpts[vertex_nbors[i]] != 0){
+      std::cout<<" and is an LCA vertex\n\t";
+    } else std::cout<<"\n\t";
+  }
+  std::cout<<"\n";
 }
 
 void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, std::vector<uint64_t>& ghost_adjs,
@@ -1038,12 +1061,29 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
     if(known_artpts[i] == 1 && articulation_point_flags[i] == 0) false_negatives++;
     if(known_artpts[i] == 0 && articulation_point_flags[i] == 1){
       false_positives++;
-      printf("Vertex %lu has LCA label %lu and low label %lu\n",g->local_unmap[i],*LCA_labels[i].begin(),low_labels[i]);
+      print_labels(g,i,LCA_labels,low_labels,potential_artpts,levels);
+      //printf("Vertex %lu has LCA label %lu and low label %lu\n",g->local_unmap[i],*LCA_labels[i].begin(),low_labels[i]);
     }
     if(known_artpts[i] == 1 && articulation_point_flags[i] == 1) correct_answers++;
   }
   std::cout<<"correct: "<<correct_answers<<" false_positives: "<<false_positives<<" false_negatives: "<<false_negatives<<"\n";
-  /*uint64_t vertex = 617362;
+  print_labels(g,20936,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,41002,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,579482,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,579477,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,579478,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,579479,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,579480,LCA_labels,low_labels,potential_artpts,levels);
+  print_labels(g,579481,LCA_labels,low_labels,potential_artpts,levels);
+  /*print_labels(g, 402359, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402362, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402361, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402357, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402360, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402363, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402364, LCA_labels, low_labels, potential_artpts, levels);
+  print_labels(g, 402365, LCA_labels, low_labels, potential_artpts, levels);*/
+  /*uint64_t vertex = 402359;
   std::cout<<"vertex "<<vertex<<" has LCA label "<<*LCA_labels[vertex].begin()<<", low label "<<low_labels[vertex]<<" and level "<<levels[vertex];
   if(potential_artpts[vertex] != 0){
     std::cout<<" and is an LCA vertex, which neighbors:\n\t";
