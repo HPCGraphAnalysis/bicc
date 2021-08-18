@@ -48,6 +48,18 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
      }
      std::cout<<"\n";
    }*/
+   uint64_t curr_GID = curr_vtx;
+   if(curr_vtx < g->n_local) curr_GID = g->local_unmap[curr_vtx];
+   else curr_GID = g->ghost_unmap[curr_vtx-g->n_local];
+   std::cout<<"Task "<<procid<<": vertex "<<curr_GID<<" has labels: \n\t";
+   for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+     std::cout<<*it<<" ";
+   }
+   std::cout<<"\n";
+   
+   if(irreducible_verts.count(curr_GID) == 1){
+     return false;
+   }
 
    while(!done){
      //if there's only one label, we're completely reduced.
@@ -56,14 +68,6 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        break;
      }
      
-     uint64_t curr_GID = curr_vtx;
-     if(curr_vtx < g->n_local) curr_GID = g->local_unmap[curr_vtx];
-     else curr_GID = g->ghost_unmap[curr_vtx-g->n_local];
-     std::cout<<"Task "<<procid<<": vertex "<<curr_GID<<" has labels: \n\t";
-     for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
-       std::cout<<*it<<" ";
-     }
-     std::cout<<"\n";
 
      uint64_t highest_level_gid = *LCA_labels[curr_vtx].begin();
      uint64_t highest_level = 0;
@@ -77,20 +81,25 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
 
      for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); ++it){
        uint64_t curr_level = 0;
+       bool is_remote = false;
        //set the level correctly, depending on whether or not this is a remote LCA.
        if(get_value(g->map, *it) == NULL_KEY /*|| get_value(g->map, *it) >= g->n_local*/){
          curr_level = remote_LCA_levels[ *it ];
+	 is_remote = true;
        } else {
          curr_level = levels[ get_value(g->map, *it) ];
        }
-       std::cout<<"\t vertex "<<*it<<" has level "<<curr_level<<"\n";
+       std::cout<<"\t vertex "<<*it<<" has level "<<curr_level;//<<"\n";
+       if(irreducible_verts.count(*it) == 1) std::cout<<" and is irreducible";
+       if(get_value(g->map, *it) >= g->n_local) std::cout<<" and is a ghost";
+       std::cout<<"\n";
        if(curr_level > highest_level){
          highest_level_gid = *it;
 	 highest_level = curr_level;
        }
      }
-     std::cout<<"\thighest level LCA label is "<<highest_level_gid<<"\n";
-     std::cout<<"\tLCA_labels["<<curr_vtx<<"].size() = "<<LCA_labels[curr_vtx].size()<<"\n";
+     std::cout<<"\thighest level LCA label is "<<highest_level_gid<<", level "<<highest_level<<"\n";
+     std::cout<<"\tLCA_labels["<<curr_GID<<"].size() = "<<LCA_labels[curr_vtx].size()<<"\n";
      //we aren't done and we need to reduce the highest-level-valued label
      //remove the ID under consideration from the current label
      LCA_labels[curr_vtx].erase(highest_level_gid);
@@ -101,13 +110,32 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        labels_of_highest_label = LCA_labels[get_value(g->map, highest_level_gid)];
      }
 
+     std::cout<<"\tLCA_labels["<<highest_level_gid<<"].size() = "<<labels_of_highest_label.size()<<"\n";
+     
+
      uint64_t level_of_labels_of_highest_label = 0;
      if(labels_of_highest_label.size() > 0 && get_value(g->map, *labels_of_highest_label.begin()) == NULL_KEY /*|| get_value(g->map, *labels_of_highest_label.begin()) >= g->n_local*/){
        level_of_labels_of_highest_label = remote_LCA_levels[*labels_of_highest_label.begin()];
-     } else {
-       level_of_labels_of_highest_label = levels[*labels_of_highest_label.begin()];
+     } else if( labels_of_highest_label.size() > 0){
+       level_of_labels_of_highest_label = levels[get_value(g->map,*labels_of_highest_label.begin())];
      }
+     
+     /*if(procid == 0 && highest_level_gid == 198559){
+       for(auto it = labels_of_highest_label.begin(); it != labels_of_highest_label.end(); it++){
+	 uint64_t curr_level = 0;
+	 if(get_value(g->map, *it) == NULL_KEY) curr_level = remote_LCA_levels[*it];
+	 else curr_level = levels[get_value(g->map,*it)];
+	 
+         uint64_t curr_label_size = 0;
+	 if(get_value(g->map, *it ) == NULL_KEY) curr_label_size = remote_LCA_labels[*it].size();
+	 else curr_label_size = LCA_labels[get_value(g->map, *it)].size();
 
+         std::cout<<"\t vertex "<<*it<<" has level "<<curr_level<<" and "<<curr_label_size<<" labels";
+	 if(irreducible_verts.count(*it) == 1) std::cout<<" and is irreducible";
+	 if(get_value(g->map, *it) >= g->n_local) std::cout<<" and is a ghost";
+	 std::cout<<"\n";
+       }  
+     }*/
      
      if(labels_of_highest_label.size() == 1 && highest_level >= level_of_labels_of_highest_label){
        //perform reduction successfully (modulo the check to make sure the levels decrease to prevent infinite looping)
@@ -122,15 +150,25 @@ bool reduce_labels(dist_graph_t *g, uint64_t curr_vtx, uint64_t* levels, std::ve
        if(irreducible_verts.count(highest_level_gid) == 1){
          //this reduction is irreducible. Abort and add to irreducibility queue/set
 	 std::cout<<"\tthis label is irreducible, wait until communication to retry\n";
-         irreducible_verts.insert(curr_vtx);
+         irreducible_verts.insert(curr_GID);
 	 irreducible_prop_queue->push(curr_vtx);
 	 return false;
-       } else if(labels_of_highest_label.size() == 0 && get_value(g->map, highest_level_gid) >= g->n_local) {
+       } else if(labels_of_highest_label.size() != 1 && get_value(g->map, highest_level_gid) >= g->n_local) {
          //the LCA which has no information is a ghost, so it is irreducible until communication. 
 	 std::cout<<"\tthis label is irreducible, wait until communication to retry\n";
-	 irreducible_verts.insert(curr_vtx);
+	 irreducible_verts.insert(curr_GID);
 	 irreducible_prop_queue->push(curr_vtx);
 	 return false;
+       } else if(labels_of_highest_label.size() == 0){
+	 //in distributed memory, impossible to tell wether this is actually going to be reducible without comm, so save for after comm.
+	 std::cout<<"\tthis label may be irreducible, wait until communication to retry\n";
+         irreducible_verts.insert(curr_GID);
+	 irreducible_prop_queue->push(curr_vtx);
+	 return false;
+       } else if(labels_of_highest_label.size() == 1 && highest_level < level_of_labels_of_highest_label){
+         irreducible_verts.insert(curr_GID);
+         irreducible_prop_queue->push(curr_vtx);
+         return false;     
        } else { //irreducible_set doesn't contain the unreduced/empty LCA label, so it's local. just wait for it.
          //irreducible flag is not set, but there are multiple labels, cannot tell it's irreducible yet,
 	 //put it back on the local prop queue and abort current reduction.
