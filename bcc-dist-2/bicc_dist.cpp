@@ -339,11 +339,46 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }
   MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
 
-  if(procid == 0){
-    for(int i = 0; i < recvsize; i++){
-      std::cout<<"*********Vertex "<<recvbuf[i]<<" is an articulation point*****************\n";
+  //if(procid == 0){
+    std::ifstream known("arts");
+    uint64_t* known_artpts = new uint64_t[g->n];
+    uint64_t* found_artpts = new uint64_t[g->n];
+    for(int i = 0; i < g->n; i++) {
+      known_artpts[i] = 0;
+      found_artpts[i] = 0;
     }
-  }
+    uint64_t art = 0;
+    while (known>>art) known_artpts[art] = 1;
+    for(int i = 0; i < recvsize; i++){
+      found_artpts[recvbuf[i]] = 1;
+    }
+    uint64_t false_negatives = 0;
+    uint64_t false_positives = 0;
+    uint64_t correct_answers = 0;
+    
+    for(int i = 0; i < g->n; i++){
+      if(known_artpts[i] == 1 && found_artpts[i] == 1) correct_answers++;
+      if(known_artpts[i] == 0 && found_artpts[i] == 1) {
+        false_positives++;
+	/*if(get_value(g->map, i) < g->n_local){
+          print_labels(g,get_value(g->map,i),LCA_labels,low_labels,potential_art_pts,levels);	
+	}*/
+      }
+      if(known_artpts[i] == 1 && found_artpts[i] == 0) false_negatives++;
+      //if(found_artpts[i] == 1) std::cout<<"*********Vertex "<<i<<" is an articulation point*****************\n";
+      //std::cout<<"\tfound_artpts["<<i<<"] = "<<found_artpts[i]<<"\n";
+    }
+    //print_labels(g,get_value(g->map,87230),LCA_labels,low_labels,potential_art_pts,levels);
+    //print_labels(g,get_value(g->map,585362),LCA_labels,low_labels,potential_art_pts,levels);
+    //print_labels(g,get_value(g->map,585363),LCA_labels,low_labels,potential_art_pts,levels);
+    std::cout<<"correct: "<<correct_answers<<" false_positives: "<<false_positives<<" false_negatives: "<<false_negatives<<"\n";
+    /*if(procid == 0){
+      print_labels(g, get_value(g->map, 290601), LCA_labels, low_labels, potential_art_pts, levels);
+    }
+    if(nprocs == 1||procid == 1){
+      print_labels(g, get_value(g->map, 290601), LCA_labels, low_labels, potential_art_pts, levels);
+    }*/
+  //}
   
   if (verbose) {
     elt = timer() - elt;

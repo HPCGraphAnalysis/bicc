@@ -190,6 +190,14 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
   //  pass low label to nbor if LCA is the same.
   //
   //if nbor was updated, add to prop_queue
+  /*if(g->local_unmap[nbor] == 290601){
+    std::cout<<"BEGIN PASS_LABELS: vertex 290601 has LCA label {";
+    for(auto it = LCA_labels[nbor].begin(); it != LCA_labels[nbor].end(); it++){
+      std::cout<<" "<<*it;
+    }
+    std::cout<<"}";
+    std::cout<<" and low label "<<low_labels[nbor]<<"\n";
+  }*/
   bool nbor_changed = false;
 
   //if the curr_vtx is an LCA
@@ -357,6 +365,16 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     //std::cout<<"adding "<<nbor<<" to queue\n";
     prop_queue->push(nbor);
   }
+  /*if(g->local_unmap[nbor] == 290601){
+    std::cout<<"END PASS_LABELS: vertex 290601 has LCA label {";
+    for(auto it = LCA_labels[nbor].begin(); it != LCA_labels[nbor].end(); it++){
+      std::cout<<" "<<*it;
+    }
+    std::cout<<"}";
+    std::cout<<" and low label "<<low_labels[nbor]<<"\n";
+    std::cout<<"nbor_changed = "<<nbor_changed<<"\n";
+    std::cout<<"procs_to_send[nbor].size() = "<<procs_to_send[nbor].size()<<"\n";
+  }*/
 }
 
 void communicate(dist_graph_t* g,
@@ -377,6 +395,15 @@ void communicate(dist_graph_t* g,
 		 std::vector<uint64_t>& ghost_adjs){
   //loop through labels_to_send, add labels-of-labels to the final set to send,
   //also set their LCA_procs_to_send
+  /*if(verts_to_send.count(get_value(g->map, 290601)) == 1){
+    std::cout<<"sending global vertex 290601 to process "<<*procs_to_send[get_value(g->map, 290601)].begin();
+    std::cout<<" it has LCA label {";
+    for(auto it = LCA_labels[get_value(g->map, 290601)].begin(); it != LCA_labels[get_value(g->map,290601)].end(); it++){
+      std::cout<<" "<<*it;
+    }
+    std::cout<<"}";
+    std::cout<<" and low label "<<low_labels[get_value(g->map, 290601)]<<"\n";
+  }*/
   std::set<uint64_t> final_labels_to_send;
   std::set<uint64_t> labels_to_send_later;
   for(auto LCA_GID_it = labels_to_send.begin(); LCA_GID_it != labels_to_send.end(); LCA_GID_it++){
@@ -401,7 +428,7 @@ void communicate(dist_graph_t* g,
       //update the LCA we're looking at
       curr_LCA_GID = *curr_label.begin();
       if(final_labels_to_send.count(curr_LCA_GID) != 0) break;
-      std::cout<<"************added label "<<curr_LCA_GID<<" in communication preprocessing\n";
+      //std::cout<<"************added label "<<curr_LCA_GID<<" in communication preprocessing\n";
       //add the LCA label to the verts to send out
       final_labels_to_send.insert(curr_LCA_GID);
 
@@ -437,7 +464,7 @@ void communicate(dist_graph_t* g,
       std::cout<<"\n";*/
 
       for(auto it = final_labels_to_send.begin(); it != final_labels_to_send.end(); it++){
-	if(*it == 237543){
+	/*if(*it == 237543){
 	  std::cout<<"Task "<<procid<<": sending LCA "<<*it<<" to processes:\n\t";
           for(auto it2 = LCA_procs_to_send[*it].begin(); it2 != LCA_procs_to_send[*it].end(); it2++){
             std::cout<<*it2<<" ";
@@ -448,7 +475,7 @@ void communicate(dist_graph_t* g,
 	    std::cout<<*it<<" ";
 	  }
 	  std::cout<<"\n";
-	}
+	}*/
       }
     }
     MPI_Barrier(MPI_COMM_WORLD);
@@ -566,15 +593,16 @@ void communicate(dist_graph_t* g,
     for(int ridx = rdispls[p]; ridx < rdispls[p+1]; ridx+=3){
       //remote LCA
       if(ridx - rdispls[p] >= vertrecvcnts[p]){
-	if(recvbuf[ridx] == 237543) std::cout<<"**** Received LCA vertex "<<recvbuf[ridx]<<" with label "<<recvbuf[ridx+1]<<" and level "<<recvbuf[ridx+2]<<"\n";
+	//if(recvbuf[ridx] == 237543) std::cout<<"**** Received LCA vertex "<<recvbuf[ridx]<<" with label "<<recvbuf[ridx+1]<<" and level "<<recvbuf[ridx+2]<<"\n";
         remote_LCA_labels[recvbuf[ridx]].clear();
 	remote_LCA_labels[recvbuf[ridx]].insert(recvbuf[ridx+1]);
 	remote_LCA_levels[recvbuf[ridx]] = recvbuf[ridx+2]; 
       } else { //ghost
 	//std::cout<<"**** Received ghost vertex "<<recvbuf[ridx]<<" with label "<<recvbuf[ridx+1]<<" and low_label "<<recvbuf[ridx+2]<<"\n";
+	//if(recvbuf[ridx] == 290601) std::cout<<" Received LCA vertex "<<recvbuf[ridx]<<" with label "<<recvbuf[ridx+1]<<" and level "<<recvbuf[ridx+2]<<"\n";
         uint64_t lid = get_value(g->map, recvbuf[ridx]);
 	//if the ghost is an LCA, and the label has updated, reset the propagate-to-lower flag to false, to trigger re-propagation.
-	if(potential_artpts[lid] != 0 && *LCA_labels[lid].begin() != recvbuf[ridx+1]){
+	if(/*potential_artpts[lid] != 0 &&*/ *LCA_labels[lid].begin() != recvbuf[ridx+1]){
           potential_artpt_did_prop_lower[lid] = false;
 	  // propagate from ghost LCAs, if the label has changed, treat it as a newly reduced label.
           // need: ghost_nbors
@@ -586,6 +614,10 @@ void communicate(dist_graph_t* g,
       }
     }
   }
+  
+  verts_to_send.clear();
+  labels_to_send.clear();
+  labels_to_send.insert(labels_to_send_later.begin(), labels_to_send_later.end());
   
   for(int p = 0; p < nprocs; p++){
     for(int ridx = rdispls[p]; ridx < rdispls[p+1]; ridx+=3){
@@ -624,14 +656,38 @@ void communicate(dist_graph_t* g,
 		        procs_to_send, LCA_procs_to_send, true, true);
 	    
 	  } 
+	} else if (potential_artpt_did_prop_lower[lid] == false){
+          int out_degree = ghost_offsets[lid+1 - g->n_local] - ghost_offsets[lid - g->n_local];
+          uint64_t* nbors = &ghost_adjs[ghost_offsets[lid-g->n_local]];
+	  for(int i = 0; i < out_degree; i++){
+            if(LCA_labels[lid] == LCA_labels[nbors[i]]){
+	      uint64_t curr_low_label = low_labels[lid];
+	      uint64_t nbor_low_label = low_labels[nbors[i]];
+	      uint64_t curr_low_label_level = 0;
+	      if(get_value(g->map, curr_low_label) == NULL_KEY){
+	        curr_low_label_level = remote_LCA_levels[curr_low_label];
+	      } else {
+	        curr_low_label_level = levels[get_value(g->map, curr_low_label)];
+	      }
+	      uint64_t nbor_low_label_level = 0;
+	      if(get_value(g->map, nbor_low_label) == NULL_KEY){
+	        nbor_low_label_level = remote_LCA_levels[nbor_low_label];
+	      } else {
+	        nbor_low_label_level = levels[get_value(g->map, nbor_low_label)];
+	      }
+	      if(curr_low_label_level < nbor_low_label_level ||
+		 (curr_low_label_level == nbor_low_label_level && curr_low_label < nbor_low_label)){
+	        low_labels[lid] = low_labels[nbors[i]];
+	      }
+
+	    }
+	  }
 	}
+	potential_artpt_did_prop_lower[lid] = true;
       }
     }
   }
 
-  verts_to_send.clear();
-  labels_to_send.clear();
-  labels_to_send.insert(labels_to_send_later.begin(), labels_to_send_later.end());
   /*std::cout<<"labels_to_send_later contains:\n\t";
   for(auto it = labels_to_send_later.begin(); it != labels_to_send_later.end(); it++){
     std::cout<<*it<<" ";
