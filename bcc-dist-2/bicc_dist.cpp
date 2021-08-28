@@ -97,11 +97,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
  for(uint64_t i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
-    printf("Task %d: global %lu (local %lu) neighbors:\n\t",procid,g->local_unmap[i],i);
+    /*printf("Task %d: global %lu (local %lu) neighbors:\n\t",procid,g->local_unmap[i],i);
     for(int j = 0; j < out_degree; j++){
       printf("global %lu (local %lu) ",(outs[j] >= g->n_local?g->ghost_unmap[outs[j]-g->n_local]: g->local_unmap[outs[j]]),outs[j]);
     }
-    printf("\n");
+    printf("\n");*/
   }
   uint64_t* parents = new uint64_t[g->n_total];
   uint64_t* levels = new uint64_t[g->n_total];
@@ -109,14 +109,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   MPI_Barrier(MPI_COMM_WORLD);
   
-  for(uint64_t i = 0; i < g->n_local; i++){
+  /*for(uint64_t i = 0; i < g->n_local; i++){
     int curr_global = g->local_unmap[i];
     printf("vertex %d, parent: %ld, level: %ld\n",curr_global, parents[i], levels[i]);
   }
   for(uint64_t i = 0; i < g->n_ghost; i++){
     int curr = g->n_local + i;
     printf("vertex %ld, parent: %ld, level: %ld\n",g->ghost_unmap[i], parents[curr], levels[curr]);
-  }
+  }*/
   
   if (verbose) {
     elt = timer() - elt;
@@ -134,7 +134,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
  
   
 
-  for(uint64_t i = 0; i < g->n_total; i++){
+  /*for(uint64_t i = 0; i < g->n_total; i++){
     if(potential_art_pts[i] != 0){
       if(i < g->n_local){
         printf("Task %d: global vertex %lu (local %lu) is a potential articulation point\n",procid,g->local_unmap[i],i);
@@ -142,7 +142,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
         printf("Task %d: global vertex %lu (local %lu) is a potential articulation point\n",procid,g->ghost_unmap[i-g->n_local],i);
       }
     }
-  }
+  }*/
    
   std::unordered_map<uint64_t, std::set<int>> procs_to_send;
   
@@ -155,13 +155,13 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       }
     }
   }
-  for(uint64_t i = 0; i < g->n_local; i++){
+  /*for(uint64_t i = 0; i < g->n_local; i++){
     printf("Task %d will send global vertex %lu (local %lu) to Task(s): ",procid, g->local_unmap[i], i);
     for(auto it = procs_to_send[i].begin(); it != procs_to_send[i].end(); it++){
       printf("%d ",*it);
     }
     printf("\n");
-  }
+  }*/
   
   //communicate potential artpt flags if they are ghosted on a process.
   int* potential_artpt_sendcnts = new int[nprocs];
@@ -223,19 +223,19 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     uint64_t* nbors = out_vertices(g, i);
     for(uint64_t j = 0; j < degree; j++){
       if(nbors[j] >= g->n_local) {
-	std::cout<<"Task "<<procid<<": found vertex "<<g->ghost_unmap[nbors[j]-g->n_local]<<"\n";
+//	std::cout<<"Task "<<procid<<": found vertex "<<g->ghost_unmap[nbors[j]-g->n_local]<<"\n";
         ghost_degrees[nbors[j] - g->n_local]++;
       }
     }
   }
-  for(int p = 0; p < nprocs; p++){
+  /*for(int p = 0; p < nprocs; p++){
     if(p == procid){
       for(size_t i = 0; i < ghost_degrees.size(); i++){
         std::cout<<"Task "<<procid<<": ghost vertex "<<g->ghost_unmap[i]<<" (local "<<i+g->n_local<<") has degree "<<ghost_degrees[i]<<"\n";
       }
     }
     MPI_Barrier(MPI_COMM_WORLD);
-  }
+  }*/
   std::cout<<"Task "<<procid<<": setting up ghost adjacencies -- offsets\n";
   std::vector<uint64_t> ghost_offsets(g->n_ghost+1,0);
   for(uint64_t i = 1; i < g->n_ghost+1; i++){
@@ -257,7 +257,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     }
   }
   std::cout<<"Task "<<procid<<": done constructing ghost adjs\n";
-  for(int p = 0; p < nprocs; p++){
+  /*for(int p = 0; p < nprocs; p++){
     if(p == procid){
       for(uint64_t i = 0; i < g->n_ghost; i++){
         std::cout<<"Task "<<procid<<": ghost vertex "<<g->ghost_unmap[i]<<" (local "<<i+g->n_local<<") neighbors\n\t";
@@ -268,7 +268,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       }
     }
     MPI_Barrier(MPI_COMM_WORLD);
-  }
+  }*/
   
   //define the largest possible unsigned int as a sentinel value
   //uint64_t max_val = std::numeric_limits<uint64_t>::max();
@@ -372,12 +372,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     //print_labels(g,get_value(g->map,585362),LCA_labels,low_labels,potential_art_pts,levels);
     //print_labels(g,get_value(g->map,585363),LCA_labels,low_labels,potential_art_pts,levels);
     std::cout<<"correct: "<<correct_answers<<" false_positives: "<<false_positives<<" false_negatives: "<<false_negatives<<"\n";
-    /*if(procid == 0){
-      print_labels(g, get_value(g->map, 290601), LCA_labels, low_labels, potential_art_pts, levels);
+    if(procid == 0){
     }
-    if(nprocs == 1||procid == 1){
-      print_labels(g, get_value(g->map, 290601), LCA_labels, low_labels, potential_art_pts, levels);
-    }*/
+    if(nprocs == 1||(nprocs== 2 && procid == 0) || (nprocs == 4 && procid == 1)){
+      print_labels(g, get_value(g->map, 372010), LCA_labels, low_labels, potential_art_pts, levels);
+    }
   //}
   
   if (verbose) {
