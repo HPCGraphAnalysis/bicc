@@ -217,14 +217,15 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
   //  pass low label to nbor if LCA is the same.
   //
   //if nbor was updated, add to prop_queue
-  /*if(g->local_unmap[nbor] == 290601){
-    std::cout<<"BEGIN PASS_LABELS: vertex 290601 has LCA label {";
+  if(nbor < g->n_local && (g->local_unmap[nbor] == 372010 ||
+			   g->local_unmap[nbor] == 373238)){
+    /*std::cout<<"BEGIN PASS_LABELS: vertex "<<g->local_unmap[nbor]<<" has LCA label {";
     for(auto it = LCA_labels[nbor].begin(); it != LCA_labels[nbor].end(); it++){
       std::cout<<" "<<*it;
     }
     std::cout<<"}";
-    std::cout<<" and low label "<<low_labels[nbor]<<"\n";
-  }*/
+    std::cout<<" and low label "<<low_labels[nbor]<<"\n";*/
+  }
   bool nbor_changed = false;
 
   //if the curr_vtx is an LCA
@@ -423,6 +424,27 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
     std::cout<<"nbor_changed = "<<nbor_changed<<"\n";
     std::cout<<"procs_to_send[nbor].size() = "<<procs_to_send[nbor].size()<<"\n";
   }*/
+  if(nbor < g->n_local && (g->local_unmap[nbor] == 372010 ||
+			   g->local_unmap[nbor] == 373238)){
+    /*std::cout<<"END PASS_LABELS: vertex "<<g->local_unmap[nbor]<<" has LCA label {";
+    for(auto it = LCA_labels[nbor].begin(); it != LCA_labels[nbor].end(); it++){
+      std::cout<<" "<<*it;
+    }
+    std::cout<<"}";
+    std::cout<<" and low label "<<low_labels[nbor]<<"\n";
+    if(curr_vtx < g->n_local){
+      std::cout<<"PASSED FROM: vertex "<<g->local_unmap[curr_vtx]<<", has LCA label {";
+    } else {
+      std::cout<<"PASSED FROM: vertex "<<g->ghost_unmap[curr_vtx - g->n_local]<<", has LCA label {";
+    }
+    for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+      std::cout<<" "<<*it;
+    }
+    std::cout<<"}";
+    std::cout<<" and low label "<<low_labels[curr_vtx]<<"\n";
+    std::cout<<"nbor_changed = "<<nbor_changed<<"\n";
+    std::cout<<"procs_to_send[nbor].size() = "<<procs_to_send[nbor].size()<<"\n";*/
+  }
 }
 
 void communicate(dist_graph_t* g,
@@ -818,10 +840,27 @@ void communicate(dist_graph_t* g,
 	    
 	  } 
 	} else if (potential_artpt_did_prop_lower[lid] == false){
-          int out_degree = ghost_offsets[lid+1 - g->n_local] - ghost_offsets[lid - g->n_local];
+          uint64_t gid = g->ghost_unmap[lid - g->n_local];
+	  /*if(gid == 373238 && low_labels[lid] != 812576){
+            std::cout<<"pulling low label to ghost 373238, ";
+	    std::cout<<"LCA_label = {";
+	    for(auto it = LCA_labels[lid].begin(); it != LCA_labels[lid].end(); it++){
+	      std::cout<<" "<<*it;
+	    }
+	    std::cout<<"}, and low_label "<<low_labels[lid]<<"\n";
+	  }*/
+	  int out_degree = ghost_offsets[lid+1 - g->n_local] - ghost_offsets[lid - g->n_local];
           uint64_t* nbors = &ghost_adjs[ghost_offsets[lid-g->n_local]];
 	  for(int i = 0; i < out_degree; i++){
-            if(LCA_labels[lid] == LCA_labels[nbors[i]]){
+            uint64_t nbor_gid = nbors[i];
+	    if(nbors[i] < g->n_local){
+	      nbor_gid = g->local_unmap[nbors[i]];
+	    } else {
+	      nbor_gid = g->ghost_unmap[nbors[i]-g->n_local];
+	    }
+            if(LCA_labels[lid] == LCA_labels[nbors[i]] && ((levels[lid] <= levels[nbors[i]]) || 
+				                           (potential_artpts[nbors[i]] == 0) ||
+							   (potential_artpts[nbors[i]] != 0 && *LCA_labels[lid].begin() != nbor_gid))){
 	      uint64_t curr_low_label = low_labels[lid];
 	      uint64_t nbor_low_label = low_labels[nbors[i]];
 	      uint64_t curr_low_label_level = 0;
@@ -843,6 +882,14 @@ void communicate(dist_graph_t* g,
 
 	    }
 	  }
+	  /*if(gid == 373238){
+            std::cout<<"pulling low label to ghost 373238, ";
+	    std::cout<<"LCA_label = {";
+	    for(auto it = LCA_labels[lid].begin(); it != LCA_labels[lid].end(); it++){
+	      std::cout<<" "<<*it;
+	    }
+	    std::cout<<"}, and low_label "<<low_labels[lid]<<"\n";
+	  }*/
 	}
 	potential_artpt_did_prop_lower[lid] = true;
       }
@@ -973,11 +1020,27 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
         
 	//pull low labels from neighbors if a reduction happened (low label may be out of date)
 	if(full_reduce && reduction_needed){
+	  /*if(curr_gid == 373238 && low_labels[curr_vtx] != 812576){
+            std::cout<<"pulling low label to 373238, ";
+	    std::cout<<"LCA_label = {";
+	    for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+	      std::cout<<" "<<*it;
+	    }
+	    std::cout<<"}, and low_label "<<low_labels[curr_vtx]<<"\n";
+	  }*/
 	  bool curr_changed = false;
 	  for(int nbor_idx = 0; nbor_idx < out_degree; nbor_idx++){
 	    uint64_t nbor = nbors[nbor_idx];
             
-	    if(LCA_labels[curr_vtx] == LCA_labels[nbor]){
+            uint64_t nbor_gid = nbors[nbor_idx];
+	    if(nbors[nbor_idx] < g->n_local){
+	      nbor_gid = g->local_unmap[nbors[nbor_idx]];
+	    } else {
+	      nbor_gid = g->ghost_unmap[nbors[nbor_idx]-g->n_local];
+	    }
+            if(LCA_labels[curr_vtx] == LCA_labels[nbors[nbor_idx]] && ((levels[curr_vtx] <= levels[nbors[nbor_idx]]) || 
+				                                      (potential_artpts[nbors[nbor_idx]] == 0) ||
+							              (potential_artpts[nbors[nbor_idx]] != 0 && *LCA_labels[curr_vtx].begin() != nbor_gid))){
               uint64_t curr_low_label = low_labels[curr_vtx];
               uint64_t nbor_low_label = low_labels[nbor];
               uint64_t curr_low_label_level = 0;
@@ -1000,6 +1063,14 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
               }
             }
 	  }
+	  /*if(curr_gid == 373238 && low_labels[curr_vtx] == 812576){
+            std::cout<<"pulling low label to 373238, ";
+	    std::cout<<"LCA_label = {";
+	    for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+	      std::cout<<" "<<*it;
+	    }
+	    std::cout<<"}, and low_label "<<low_labels[curr_vtx]<<"\n";
+	  }*/
 	  if(curr_changed && procs_to_send[curr_vtx].size() > 0){
 	    //send curr_vtx & labels to remotes if reduction happened and low label updated
 	    verts_to_send.insert(curr_vtx);
