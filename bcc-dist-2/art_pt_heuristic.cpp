@@ -17,7 +17,7 @@ extern int procid, nprocs;
 extern bool verbose, debug, verify, output;
 
 void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,uint64_t* levels, int* visited_edges){
-  std::cout<<"Computing nontree edges\n";
+  //std::cout<<"Computing nontree edges\n";
   for(uint64_t i = 0; i < g->n_local; i++){
     //go through the local nodes, and look through all connections that are not parent-child
     int out_degree = out_degree(g,i);
@@ -28,14 +28,14 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
       if(neighbor >= g->n_local) global_neighbor = g->ghost_unmap[global_neighbor-g->n_local];
       else global_neighbor = g->local_unmap[global_neighbor];
       uint64_t global_current = g->local_unmap[i];
-      printf("Checking edge between %ld (parent: %ld) and %ld (parent: %ld)\n",global_current,parents[i],global_neighbor,parents[neighbor]);
+      //printf("Checking edge between %ld (parent: %ld) and %ld (parent: %ld)\n",global_current,parents[i],global_neighbor,parents[neighbor]);
       if(parents[neighbor] != global_current && parents[i] != global_neighbor){
         //if the edge is partly owned by the current processor, the neighbor will be the ghosted vertex
         if((global_current < global_neighbor) || (neighbor >= g->n_local)){		
           if(levels[i] <= levels[neighbor]){
             //if neighbor is owned, this processor gets the entry
             if(neighbor < g->n_local){
-              printf("Task %d: nontree edge found between %ld and %ld\n",procid,global_current,global_neighbor);
+              //printf("Task %d: nontree edge found between %ld and %ld\n",procid,global_current,global_neighbor);
               q.push(global_current);
               q.push(global_neighbor);
               q.push(levels[i]);
@@ -51,7 +51,7 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
 		
 		//the only edges that make it here have levels[i] == levels[neighbor], so distinguish based on GID.
 		if(global_current < global_neighbor){
-                  printf("Task %d: nontree edge found between %ld and %ld\n",procid,global_current,global_neighbor);
+                  //printf("Task %d: nontree edge found between %ld and %ld\n",procid,global_current,global_neighbor);
                   q.push(global_current);
                   q.push(global_neighbor);
                   q.push(levels[i]);
@@ -77,7 +77,7 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
             }
           } else {
             //we already know i is owned, i goes from 0 to g->n_local
-            printf("Task %d: nontree edge found between %ld and %ld\n",procid,global_current,global_neighbor);
+            //printf("Task %d: nontree edge found between %ld and %ld\n",procid,global_current,global_neighbor);
             q.push(global_current);
             q.push(global_neighbor);
             q.push(levels[i]);
@@ -132,7 +132,7 @@ void init_queue_nontree(dist_graph_t* g, std::queue<int> &q, uint64_t* parents,u
       }
     }
   }
-  std::cout<<"Finished computing nontree edges\n";
+  //std::cout<<"Finished computing nontree edges\n";
 }
 
 void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &send, uint64_t* parents, uint64_t* levels, uint64_t* flags, int* visited_edges){
@@ -151,7 +151,7 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
     int task2 = queue.front();
     queue.pop();
 
-    printf("Task %d: v1: %ld, v2: %ld, l1: %d, l2: %d, t1: %d, t2: %d\n",procid,vertex1,vertex2,level1,level2,task1,task2);
+    //printf("Task %d: v1: %ld, v2: %ld, l1: %d, l2: %d, t1: %d, t2: %d\n",procid,vertex1,vertex2,level1,level2,task1,task2);
     uint64_t local_vertex1 = get_value(g->map,vertex1);
     uint64_t local_vertex2 = get_value(g->map,vertex2);
     if(local_vertex1 >= 0 && local_vertex2 >= 0){
@@ -268,7 +268,7 @@ void lca_traversal(dist_graph_t* g, std::queue<int> &queue, std::queue<int> &sen
 }
 
 void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue, int* visited_edges){
-  std::cout<<"Rank "<<procid<<" communicating LCA Traversal\n";
+  //std::cout<<"Rank "<<procid<<" communicating LCA Traversal\n";
   //figure out how many entries are being sent to each processor
   int* sendbuf = new int[nprocs];
   for(int i = 0; i < nprocs; i++){
@@ -276,7 +276,7 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
   }
   
   std::queue<int> procsqueue;
-  std::cout<<"Rank "<<procid<<" setting up sendnts\n";
+  //std::cout<<"Rank "<<procid<<" setting up sendnts\n";
   for(size_t i = 0; i < send.size()/6; i++){
     int vertex1 = send.front();
     send.pop();
@@ -290,7 +290,7 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
     send.pop();
     int proc2 = send.front();
     send.pop();
-    printf("Task %d sending: vertex1: %d, vertex2: %d, level1: %d, level2: %d, proc1: %d, proc2: %d\n", procid,vertex1, vertex2,level1,level2,proc1, proc2);
+    //printf("Task %d sending: vertex1: %d, vertex2: %d, level1: %d, level2: %d, proc1: %d, proc2: %d\n", procid,vertex1, vertex2,level1,level2,proc1, proc2);
     
     if(proc1 != procid){ //send to proc1
       sendbuf[proc1]++;
@@ -307,22 +307,22 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
     send.push(proc1);
     send.push(proc2);
   } 
-  printf("Task %d Sendbuf: ",procid);
-  for(int i = 0; i < nprocs; i++){
+  //printf("Task %d Sendbuf: ",procid);
+  /*for(int i = 0; i < nprocs; i++){
     printf("%d ",sendbuf[i]);
   }
-  printf("\n");
+  printf("\n");*/
   //send the counts using alltoall
   int* recvbuf = new int[nprocs];
   for(int i = 0; i < nprocs; i++) recvbuf[i] = 0;
   
   MPI_Alltoall(sendbuf, 1, MPI_INT,recvbuf, 1, MPI_INT, MPI_COMM_WORLD);
   //printf("Task %d: MPI_Alltoall returned %d\n",procid,status);
-  printf("Task %d Recvbuf: ",procid);
-  for(int i = 0; i < nprocs; i++){
-    printf("%d ",recvbuf[i]);
-  }  
-  printf("\n");
+  //printf("Task %d Recvbuf: ",procid);
+  //for(int i = 0; i < nprocs; i++){
+  //  printf("%d ",recvbuf[i]);
+  //}  
+  //printf("\n");
 
   int* sdispls = new int[nprocs];
   sdispls[0] = 0;
@@ -393,7 +393,7 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
 
   //using the counts, put each entry in an array to send
   //calculate displacements and everything else needed for the alltoallv.
-  std::cout<<"Rank "<<procid<<" Doing final Alltoallv\n";
+  //std::cout<<"Rank "<<procid<<" Doing final Alltoallv\n";
   MPI_Alltoallv(final_sendbuf, sendcounts, sdispls, MPI_INT, final_recvbuf, recvcounts, rdispls, MPI_INT, MPI_COMM_WORLD);
   
   /*for(int i = 0; i < recvsize; i+=6){
@@ -430,12 +430,12 @@ void communicate(dist_graph_t* g, std::queue<int> &send, std::queue<int> &queue,
   delete [] final_recvbuf;
   delete [] sendcounts;
   delete [] recvcounts; 
-  std::cout<<"Rank "<<procid<<" Exiting communication function\n";
+  //std::cout<<"Rank "<<procid<<" Exiting communication function\n";
 }
 
 void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, 
                       uint64_t* parents, uint64_t* levels, uint64_t* art_pt_flags) {
-  std::cout<<"Starting art_pt_heuristic\n";
+  //std::cout<<"Starting art_pt_heuristic\n";
   //Initialize the queue q->queue with nontree edges.
   std::queue<int> lca_data;
   int* visited_edges = new int[g->m_local];
@@ -446,7 +446,7 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     //also need to keep track of the edges used in the traversal, to flag both ends of a bridge.
   std::queue<int> send_queue;
   int all_done = 0;
-  std::cout<<"Starting LCA Traversals\n";
+  //std::cout<<"Starting LCA Traversals\n";
   while(!all_done){
     lca_traversal(g,lca_data,send_queue,parents,levels,art_pt_flags,visited_edges);
     //printf("Task %d attempting to send %d entries\n",procid,send_queue.size()/6);
@@ -454,10 +454,10 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     int local_done = lca_data.empty() && send_queue.empty();
     MPI_Allreduce(&local_done, &all_done, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   }
-  std::cout<<"LCA Traversals completed\n";
+  //std::cout<<"LCA Traversals completed\n";
   int bridges = 0;
   //any endpoint of an unvisited edge should be marked as a potential articulation point
-  std::cout<<"Marking bridges\n";
+  //std::cout<<"Marking bridges\n";
   for(uint64_t i = 0; i < g->n_local; i++){
     for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       if(visited_edges[j] == 0){
@@ -471,6 +471,6 @@ void art_pt_heuristic(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
       }
     }
   }
-  std::cout<<"Done marking bridges\n";
-  printf("Task %d: found %d bridges\n",procid, bridges);
+  //std::cout<<"Done marking bridges\n";
+  //printf("Task %d: found %d bridges\n",procid, bridges);
 }

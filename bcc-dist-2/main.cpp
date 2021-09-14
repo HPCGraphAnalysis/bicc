@@ -36,7 +36,7 @@ int main(int argc, char **argv)
   setbuf(stdout, 0);
 
   verbose = true;
-  debug = true;
+  debug = false;
   verify = true;
 
   MPI_Init(&argc, &argv);
