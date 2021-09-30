@@ -310,32 +310,32 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   return 0;
 }
 
-extern "C" int create_dist_graph(dist_graph_t* g, 
-          unsigned long n_global, unsigned long m_global, 
-          unsigned long n_local, unsigned long m_local,
-          unsigned long* local_adjs, unsigned long* local_offsets, 
-          unsigned long* global_ids, unsigned long* vert_dist)
-{
-  MPI_Comm_rank(MPI_COMM_WORLD, &procid);
-  MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
-  if (nprocs > 1)
-  {
-    create_graph(g, (uint64_t)n_global, (uint64_t)m_global, 
-                 (uint64_t)n_local, (uint64_t)m_local,
-                 (uint64_t*)local_offsets, (uint64_t*)local_adjs, 
-                 (uint64_t*)global_ids);
-    relabel_edges(g, vert_dist);
-  }
-  else
-  {
-    create_graph_serial(g, (uint64_t)n_global, (uint64_t)m_global, 
-                 (uint64_t)n_local, (uint64_t)m_local,
-                 (uint64_t*)local_offsets, (uint64_t*)local_adjs);
-  }
+// extern "C" int create_dist_graph(dist_graph_t* g, 
+//           unsigned long n_global, unsigned long m_global, 
+//           unsigned long n_local, unsigned long m_local,
+//           unsigned long* local_adjs, unsigned long* local_offsets, 
+//           unsigned long* global_ids, unsigned long* vert_dist)
+// {
+//   MPI_Comm_rank(MPI_COMM_WORLD, &procid);
+//   MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
+//   if (nprocs > 1)
+//   {
+//     create_graph(g, (uint64_t)n_global, (uint64_t)m_global, 
+//                  (uint64_t)n_local, (uint64_t)m_local,
+//                  (uint64_t*)local_offsets, (uint64_t*)local_adjs, 
+//                  (uint64_t*)global_ids);
+//     relabel_edges(g, vert_dist);
+//   }
+//   else
+//   {
+//     create_graph_serial(g, (uint64_t)n_global, (uint64_t)m_global, 
+//                  (uint64_t)n_local, (uint64_t)m_local,
+//                  (uint64_t*)local_offsets, (uint64_t*)local_adjs);
+//   }
 
-  //get_ghost_degrees(g);
-  //get_ghost_weights(g);
+//   //get_ghost_degrees(g);
+//   //get_ghost_weights(g);
 
-  return 0;
-}
+//   return 0;
+// }
 

@@ -87,13 +87,17 @@ int clear_graph(dist_graph_t *g);
 
 int relabel_edges(dist_graph_t *g);
 
-int relabel_edges(dist_graph_t* g, uint64_t* verts_per_rank);
+int relabel_edges(dist_graph_t* g, int32_t* part_list);
 
 int get_max_degree_vert(dist_graph_t *g);
 
 int get_ghost_degrees(dist_graph_t* g);
 
 int get_ghost_degrees(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q);
+
+int repart_graph(dist_graph_t *g, mpi_data_t* comm, int32_t* part_list);
+
+int determine_edge_block(dist_graph_t* g, int32_t*& part_list);
 
 inline int32_t highest_less_than(uint64_t* prefix_sums, uint64_t val)
 {

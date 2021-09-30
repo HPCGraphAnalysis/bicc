@@ -66,9 +66,11 @@ int main(int argc, char **argv)
   uint64_t gen_n = 0;
   uint64_t gen_m_per_n = 16;
   bool offset_vids = false;
+  bool edge_block = false;
+  int32_t* part_list = NULL;
 
   char c;
-  while ((c = getopt (argc, argv, "v:e:o:i:m:s:p:dlqtc")) != -1) {
+  while ((c = getopt (argc, argv, "hm:r:g:s:p:dte")) != -1) {
     switch (c) {
       case 'h': print_usage_full(argv); break;
       case 'm': num_runs = strtoul(optarg, NULL, 10); break;
@@ -78,6 +80,7 @@ int main(int argc, char **argv)
       case 'p': gen_m_per_n = strtoul(optarg, NULL, 10); break;
       case 'd': offset_vids = true; break;
       case 't': output_time = true; break;
+      case 'e': edge_block = true; break;
       default:
         throw_err("Input argument format error");
     }
@@ -85,7 +88,6 @@ int main(int argc, char **argv)
 
   graph_gen_data_t ggi;
   dist_graph_t g;
-
   mpi_data_t comm;
   init_comm_data(&comm);
   if (gen_rand)
@@ -123,6 +125,11 @@ int main(int argc, char **argv)
     exchange_edges(&ggi, &comm);
     create_graph(&ggi, &g);
     relabel_edges(&g);
+    if (edge_block)
+      determine_edge_block(&g, part_list);
+    
+    if (part_list != NULL) 
+      repart_graph(&g, &comm, part_list);
   }
   else
   {
