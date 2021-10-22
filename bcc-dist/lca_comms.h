@@ -88,11 +88,7 @@ inline void init_queue_lca(dist_graph_t* g, lca_queue_data_t* lcaq){
   uint64_t queue_size = g->n_local + g->n_ghost;
   lcaq->queue = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
   lcaq->queue_next = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
-  lcaq->finish = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
-  
-  uint64_t* queue;
-  uint64_t* queue_next;
-  uint64_t* finish;
+  lcaq->finish = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));  
   if (lcaq->queue == NULL || lcaq->queue_next == NULL || lcaq->finish == NULL)
     throw_err("init_queue_lca(), unable to allocate resources\n",procid);
   
@@ -162,17 +158,20 @@ inline void add_to_lca(lca_thread_data_t* lcat, lca_queue_data_t* lcaq,
                        uint64_t vert2, uint64_t pred2, uint64_t level2);
 inline void empty_lca_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
 
+
 inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq, 
                        uint64_t vert1, uint64_t pred1, uint64_t level1);
-inline void empty_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
+inline void empty_finish_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
 
 inline void update_lca_send(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
 inline void empty_lca_send(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq);
 
-inline void update_lca_finish(dist_graph_t* g, thread_comm_t* tc, mpi_data_t* comm,
+inline void update_lca_finish(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
+//(dist_graph_t* g, thread_comm_t* tc, mpi_data_t* comm,
+//  lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
 inline void empty_lca_finish(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq);
 
@@ -208,6 +207,8 @@ inline void empty_lca_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
   lcat->thread_queue_size = 0;
 }
 
+
+
 inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq, 
                        uint64_t vert1, uint64_t pred1, uint64_t level1)
 {
@@ -216,10 +217,10 @@ inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq,
   lcat->thread_finish[lcat->thread_finish_size++] = level1;
 
   if (lcat->thread_finish_size+3 >= THREAD_QUEUE_SIZE)
-    empty_lca_queue(lcat, lcaq);
+    empty_finish_queue(lcat, lcaq);
 }
 
-inline void empty_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
+inline void empty_finish_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
 {
   uint64_t start_offset;
 
@@ -235,15 +236,15 @@ inline void empty_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
 inline void update_lca_send(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
 {
+  tc->sendbuf_rank_thread[tc->thread_queue_size/6] = send_rank;
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+1];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+2];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+3];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+4];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+5];
-  tc->sendbuf_rank_thread[tc->thread_queue_size/6] = send_rank;
-  ++tc->thread_queue_size;
-  ++tc->sendcounts_thread[send_rank];
+  //++tc->thread_queue_size;
+  //++tc->sendcounts_thread[send_rank];
 
   if (tc->thread_queue_size+6 >= THREAD_QUEUE_SIZE)
     empty_lca_send(tc, comm, lcaq);
@@ -286,44 +287,52 @@ for (int32_t i = 0; i < nprocs; ++i)
   tc->thread_queue_size = 0;
 }
 
-inline void update_lca_finish(dist_graph_t* g, 
-                                   thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq,
-                                   uint64_t vert_index, int32_t data)
-{
-  for (int32_t i = 0; i < nprocs; ++i)
-    tc->v_to_rank[i] = false;
-
-  uint64_t out_degree = out_degree(g, vert_index);
-  uint64_t* outs = out_vertices(g, vert_index);
-  for (uint64_t j = 0; j < out_degree; ++j)
-  {
-    uint64_t out_index = outs[j];
-    if (out_index >= g->n_local)
-    {
-      int32_t out_rank = g->ghost_tasks[out_index - g->n_local];
-      if (!tc->v_to_rank[out_rank])
-      {
-        tc->v_to_rank[out_rank] = true;
-        add_vid_data_to_send(tc, comm,
-          g->local_unmap[vert_index], data, out_rank);
-      }
-    }
-  }
-}
-
-inline void add_data_to_finish(thread_comm_t* tc, mpi_data_t* comm,
+inline void update_lca_finish(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
 {
-  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index];
-  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+1];
-  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+2];
-  tc->sendbuf_rank_thread[tc->thread_queue_size/3] = send_rank;
-  ++tc->thread_queue_size;
-  ++tc->sendcounts_thread[send_rank];
+  // for (int32_t i = 0; i < nprocs; ++i)
+  //   tc->v_to_rank[i] = false;
 
-  if (tc->thread_queue_size+3 >= THREAD_QUEUE_SIZE)
+  // uint64_t out_degree = out_degree(g, vert_index);
+  // uint64_t* outs = out_vertices(g, vert_index);
+  // for (uint64_t j = 0; j < out_degree; ++j)
+  // {
+  //   uint64_t out_index = outs[j];
+  //   if (out_index >= g->n_local)
+  //   {
+  //     int32_t out_rank = g->ghost_tasks[out_index - g->n_local];
+  //     if (!tc->v_to_rank[out_rank])
+  //     {
+  //       tc->v_to_rank[out_rank] = true;
+  //       add_vid_data_to_send(tc, comm,
+  //         g->local_unmap[vert_index], data, out_rank);
+  //     }
+  //   }
+  // }  
+  tc->sendbuf_rank_thread[tc->thread_queue_size/3] = send_rank;
+  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->finish[index];
+  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->finish[index+1];
+  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->finish[index+2];
+  //++tc->thread_queue_size;
+  //++tc->sendcounts_thread[send_rank];
+
+  if (tc->thread_queue_size+6 >= THREAD_QUEUE_SIZE)
     empty_lca_finish(tc, comm, lcaq);
 }
+
+// inline void add_data_to_finish(thread_comm_t* tc, mpi_data_t* comm,
+//   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
+// {
+//   tc->sendbuf_rank_thread[tc->thread_queue_size/3] = send_rank;
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index];
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+1];
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+2];
+//   ++tc->thread_queue_size;
+//   ++tc->sendcounts_thread[send_rank];
+
+//   if (tc->thread_queue_size+3 >= THREAD_QUEUE_SIZE)
+//     empty_lca_finish(tc, comm, lcaq);
+// }
 
 inline void empty_lca_finish(thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq)
