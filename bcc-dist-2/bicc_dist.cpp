@@ -113,7 +113,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   
   for(uint64_t i = 0; i < g->n_total; i++) potential_art_pts[i] = 0;
-  art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
+  //art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
+  bicc_lca(g,comm,q,parents,levels,potential_art_pts);
+  int counter = 0;
+  for(uint64_t i = 0; i < g->n_local; i++)
+    if (potential_art_pts[i])
+      ++counter;
+    
+  printf("arts %d\n", counter);
  
   if(verbose) {
     MPI_Barrier(MPI_COMM_WORLD);

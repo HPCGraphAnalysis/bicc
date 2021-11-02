@@ -61,7 +61,7 @@ extern int procid, nprocs;
 extern bool verbose, debug, verify;
 
 #define MAX_SEND_SIZE 2147483648
-#define THREAD_QUEUE_SIZE 1024
+#define LCA_THREAD_QUEUE_SIZE 6144
 
 struct lca_thread_data_t {
   int32_t tid;
@@ -85,14 +85,10 @@ struct lca_queue_data_t {
 inline void init_queue_lca(dist_graph_t* g, lca_queue_data_t* lcaq){
   if (debug) { printf("Task %d init_queue_lca() start\n", procid);}
   
-  uint64_t queue_size = g->n_local + g->n_ghost;
-  lcaq->queue = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
-  lcaq->queue_next = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
-  lcaq->finish = (uint64_t*)malloc(100*queue_size*sizeof(uint64_t));
-  
-  /*uint64_t* queue;
-  uint64_t* queue_next;
-  uint64_t* finish;*/
+  uint64_t queue_size = g->m_local;//g->n_local + g->n_ghost;
+  lcaq->queue = (uint64_t*)malloc(20*queue_size*sizeof(uint64_t));
+  lcaq->queue_next = (uint64_t*)malloc(20*queue_size*sizeof(uint64_t));
+  lcaq->finish = (uint64_t*)malloc(20*queue_size*sizeof(uint64_t));  
   if (lcaq->queue == NULL || lcaq->queue_next == NULL || lcaq->finish == NULL)
     throw_err("init_queue_lca(), unable to allocate resources\n",procid);
   
@@ -116,8 +112,8 @@ inline void init_thread_lca(lca_thread_data_t* lcat) {
   if (debug) { printf("Task %d init_thread_queue() start\n", procid);}
 
   lcat->tid = omp_get_thread_num();
-  lcat->thread_queue = (uint64_t*)malloc(THREAD_QUEUE_SIZE*sizeof(uint64_t));
-  lcat->thread_finish = (uint64_t*)malloc(THREAD_QUEUE_SIZE*sizeof(uint64_t));
+  lcat->thread_queue = (uint64_t*)malloc(LCA_THREAD_QUEUE_SIZE*sizeof(uint64_t));
+  lcat->thread_finish = (uint64_t*)malloc(LCA_THREAD_QUEUE_SIZE*sizeof(uint64_t));
   if (lcat->thread_queue == NULL || lcat->thread_finish == NULL)
     throw_err("init_thread_lca(), unable to allocate resources\n", procid, lcat->tid);
 
@@ -162,19 +158,35 @@ inline void add_to_lca(lca_thread_data_t* lcat, lca_queue_data_t* lcaq,
                        uint64_t vert2, uint64_t pred2, uint64_t level2);
 inline void empty_lca_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
 
-inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq, 
-                       uint64_t vert1, uint64_t pred1, uint64_t level1);
-inline void empty_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
+inline void add_to_lca_bridge(
+  lca_thread_data_t* lcat, lca_queue_data_t* lcaq, uint64_t vert);
+inline void empty_lca_queue_bridge(
+  lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
 
-inline void update_lca_send(thread_comm_t* tc, mpi_data_t* comm,
-  lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
-inline void empty_lca_send(thread_comm_t* tc, mpi_data_t* comm,
-  lca_queue_data_t* lcaq);
 
-inline void update_lca_finish(dist_graph_t* g, thread_comm_t* tc, mpi_data_t* comm,
+// inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq, 
+//                        uint64_t vert1, uint64_t pred1, uint64_t level1);
+// inline void empty_finish_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq);
+
+inline void update_lca_send(
+  thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
-inline void empty_lca_finish(thread_comm_t* tc, mpi_data_t* comm,
-  lca_queue_data_t* lcaq);
+inline void empty_lca_send( 
+  thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq);
+
+inline void update_lca_send_bridge(
+  thread_comm_t* tc, mpi_data_t* comm,
+  lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
+inline void empty_lca_send_bridge( 
+  thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq);
+
+// inline void update_lca_finish(dist_graph_t* g, 
+//   thread_comm_t* tc, mpi_data_t* comm,
+//   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
+//(dist_graph_t* g, thread_comm_t* tc, mpi_data_t* comm,
+//  lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank);
+// inline void empty_lca_finish(dist_graph_t* g, 
+//   thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq);
 
 inline void exchange_lca(dist_graph_t* g, mpi_data_t* comm);
 
@@ -191,7 +203,7 @@ inline void add_to_lca(lca_thread_data_t* lcat, lca_queue_data_t* lcaq,
   lcat->thread_queue[lcat->thread_queue_size++] = pred2;
   lcat->thread_queue[lcat->thread_queue_size++] = level2;
 
-  if (lcat->thread_queue_size+6 >= THREAD_QUEUE_SIZE)
+  if (lcat->thread_queue_size+6 >= LCA_THREAD_QUEUE_SIZE)
     empty_lca_queue(lcat, lcaq);
 }
 
@@ -208,49 +220,75 @@ inline void empty_lca_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
   lcat->thread_queue_size = 0;
 }
 
-inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq, 
-                       uint64_t vert1, uint64_t pred1, uint64_t level1)
-{
-  lcat->thread_finish[lcat->thread_finish_size++] = vert1;
-  lcat->thread_finish[lcat->thread_finish_size++] = pred1;
-  lcat->thread_finish[lcat->thread_finish_size++] = level1;
 
-  if (lcat->thread_finish_size+3 >= THREAD_QUEUE_SIZE)
-    empty_lca_queue(lcat, lcaq);
+inline void add_to_lca_bridge(
+  lca_thread_data_t* lcat, lca_queue_data_t* lcaq, uint64_t vert)
+{
+  lcat->thread_queue[lcat->thread_queue_size++] = vert;
+
+  if (lcat->thread_queue_size+1 >= LCA_THREAD_QUEUE_SIZE)
+    empty_lca_queue_bridge(lcat, lcaq);
 }
 
-inline void empty_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
+inline void empty_lca_queue_bridge(
+  lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
 {
   uint64_t start_offset;
 
 #pragma omp atomic capture
-  start_offset = lcaq->finish_size += lcat->thread_finish_size;
+  start_offset = lcaq->next_size += lcat->thread_queue_size;
 
-  start_offset -= lcat->thread_finish_size;
-  for (uint64_t i = 0; i < lcat->thread_finish_size; ++i)
-    lcaq->finish[start_offset + i] = lcat->thread_finish[i];
-  lcat->thread_finish_size = 0;
+  start_offset -= lcat->thread_queue_size;
+  for (uint64_t i = 0; i < lcat->thread_queue_size; ++i)
+    lcaq->queue_next[start_offset + i] = lcat->thread_queue[i];
+  lcat->thread_queue_size = 0;
 }
 
-inline void update_lca_send(thread_comm_t* tc, mpi_data_t* comm,
+
+// inline void add_to_finish(lca_thread_data_t* lcat, lca_queue_data_t* lcaq, 
+//                        uint64_t vert1, uint64_t pred1, uint64_t level1)
+// {
+//   lcat->thread_finish[lcat->thread_finish_size++] = vert1;
+//   lcat->thread_finish[lcat->thread_finish_size++] = pred1;
+//   lcat->thread_finish[lcat->thread_finish_size++] = level1;
+
+//   if (lcat->thread_finish_size+3 >= LCA_THREAD_QUEUE_SIZE)
+//     empty_finish_queue(lcat, lcaq);
+// }
+
+// inline void empty_finish_queue(lca_thread_data_t* lcat, lca_queue_data_t* lcaq)
+// {
+//   uint64_t start_offset;
+
+// #pragma omp atomic capture
+//   start_offset = lcaq->finish_size += lcat->thread_finish_size;
+
+//   start_offset -= lcat->thread_finish_size;
+//   for (uint64_t i = 0; i < lcat->thread_finish_size; ++i)
+//     lcaq->finish[start_offset + i] = lcat->thread_finish[i];
+//   lcat->thread_finish_size = 0;
+// }
+
+inline void update_lca_send( 
+  thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
 {
+  tc->sendbuf_rank_thread[tc->thread_queue_size/6] = send_rank;
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+1];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+2];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+3];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+4];
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+5];
-  tc->sendbuf_rank_thread[tc->thread_queue_size/6] = send_rank;
-  ++tc->thread_queue_size;
-  ++tc->sendcounts_thread[send_rank];
+  //++tc->thread_queue_size;
+  //++tc->sendcounts_thread[send_rank];
 
-  if (tc->thread_queue_size+6 >= THREAD_QUEUE_SIZE)
+  if (tc->thread_queue_size+6 >= LCA_THREAD_QUEUE_SIZE)
     empty_lca_send(tc, comm, lcaq);
 }
 
-inline void empty_lca_send(thread_comm_t* tc, mpi_data_t* comm,
-  lca_queue_data_t* lcaq)
+inline void empty_lca_send(
+  thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq)
 {
 for (int32_t i = 0; i < nprocs; ++i)
   {
@@ -286,47 +324,19 @@ for (int32_t i = 0; i < nprocs; ++i)
   tc->thread_queue_size = 0;
 }
 
-inline void update_lca_finish(dist_graph_t* g, 
-                                   thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq,
-                                   uint64_t vert_index, int32_t data)
-{
-  for (int32_t i = 0; i < nprocs; ++i)
-    tc->v_to_rank[i] = false;
-
-  uint64_t out_degree = out_degree(g, vert_index);
-  uint64_t* outs = out_vertices(g, vert_index);
-  for (uint64_t j = 0; j < out_degree; ++j)
-  {
-    uint64_t out_index = outs[j];
-    if (out_index >= g->n_local)
-    {
-      int32_t out_rank = g->ghost_tasks[out_index - g->n_local];
-      if (!tc->v_to_rank[out_rank])
-      {
-        tc->v_to_rank[out_rank] = true;
-        add_vid_data_to_send(tc, comm,
-          g->local_unmap[vert_index], data, out_rank);
-      }
-    }
-  }
-}
-
-inline void add_data_to_finish(thread_comm_t* tc, mpi_data_t* comm,
+inline void update_lca_send_bridge( 
+  thread_comm_t* tc, mpi_data_t* comm,
   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
 {
+  tc->sendbuf_rank_thread[tc->thread_queue_size] = send_rank;
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index];
-  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+1];
-  tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+2];
-  tc->sendbuf_rank_thread[tc->thread_queue_size/3] = send_rank;
-  ++tc->thread_queue_size;
-  ++tc->sendcounts_thread[send_rank];
 
-  if (tc->thread_queue_size+3 >= THREAD_QUEUE_SIZE)
-    empty_lca_finish(tc, comm, lcaq);
+  if (tc->thread_queue_size+1 >= LCA_THREAD_QUEUE_SIZE)
+    empty_lca_send_bridge(tc, comm, lcaq);
 }
 
-inline void empty_lca_finish(thread_comm_t* tc, mpi_data_t* comm,
-  lca_queue_data_t* lcaq)
+inline void empty_lca_send_bridge(
+  thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq)
 {
 for (int32_t i = 0; i < nprocs; ++i)
   {
@@ -336,16 +346,12 @@ for (int32_t i = 0; i < nprocs; ++i)
     tc->thread_starts[i] -= tc->sendcounts_thread[i];
   }
 
-  for (uint64_t i = 0; i < tc->thread_queue_size; i+=3)
+  for (uint64_t i = 0; i < tc->thread_queue_size; ++i)
   {
-    int32_t cur_rank = tc->sendbuf_rank_thread[i/3];
+    int32_t cur_rank = tc->sendbuf_rank_thread[i];
     comm->sendbuf_vert[tc->thread_starts[cur_rank]] = 
       tc->sendbuf_vert_thread[i];
-    comm->sendbuf_vert[tc->thread_starts[cur_rank]+1] = 
-      tc->sendbuf_vert_thread[i+1];
-    comm->sendbuf_vert[tc->thread_starts[cur_rank]+2] = 
-      tc->sendbuf_vert_thread[i+2];
-    tc->thread_starts[cur_rank] += 3;
+    tc->thread_starts[cur_rank] += 1;
   }
   
   for (int32_t i = 0; i < nprocs; ++i)
@@ -355,6 +361,84 @@ for (int32_t i = 0; i < nprocs; ++i)
   }
   tc->thread_queue_size = 0;
 }
+// inline void update_lca_finish(dist_graph_t* g, 
+//   thread_comm_t* tc, mpi_data_t* comm,
+//   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
+// {
+//   // for (int32_t i = 0; i < nprocs; ++i)
+//   //   tc->v_to_rank[i] = false;
+
+//   // uint64_t out_degree = out_degree(g, vert_index);
+//   // uint64_t* outs = out_vertices(g, vert_index);
+//   // for (uint64_t j = 0; j < out_degree; ++j)
+//   // {
+//   //   uint64_t out_index = outs[j];
+//   //   if (out_index >= g->n_local)
+//   //   {
+//   //     int32_t out_rank = g->ghost_tasks[out_index - g->n_local];
+//   //     if (!tc->v_to_rank[out_rank])
+//   //     {
+//   //       tc->v_to_rank[out_rank] = true;
+//   //       add_vid_data_to_send(tc, comm,
+//   //         g->local_unmap[vert_index], data, out_rank);
+//   //     }
+//   //   }
+//   // }  
+//   //tc->sendbuf_rank_thread[tc->thread_queue_size/3] = send_rank;
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->finish[index];
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->finish[index+1];
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->finish[index+2];
+//   //++tc->thread_queue_size;
+//   //++tc->sendcounts_thread[send_rank];
+
+//   if (tc->thread_queue_size+6 >= LCA_THREAD_QUEUE_SIZE)
+//     empty_lca_finish(g, tc, comm, lcaq);
+// }
+
+// inline void add_data_to_finish(thread_comm_t* tc, mpi_data_t* comm,
+//   lca_queue_data_t* lcaq, uint64_t index, int32_t send_rank)
+// {
+//   tc->sendbuf_rank_thread[tc->thread_queue_size/3] = send_rank;
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index];
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+1];
+//   tc->sendbuf_vert_thread[tc->thread_queue_size++] = lcaq->queue_next[index+2];
+//   ++tc->thread_queue_size;
+//   ++tc->sendcounts_thread[send_rank];
+
+//   if (tc->thread_queue_size+3 >= LCA_THREAD_QUEUE_SIZE)
+//     empty_lca_finish(tc, comm, lcaq);
+// }
+
+// inline void empty_lca_finish(dist_graph_t* g, 
+//   thread_comm_t* tc, mpi_data_t* comm, lca_queue_data_t* lcaq)
+// {
+// for (int32_t i = 0; i < nprocs; ++i)
+//   {
+// #pragma omp atomic capture
+//     tc->thread_starts[i] = comm->sdispls_temp[i] += tc->sendcounts_thread[i];
+
+//     tc->thread_starts[i] -= tc->sendcounts_thread[i];
+//   }
+
+//   for (uint64_t i = 0; i < tc->thread_queue_size; i+=3)
+//   {
+//     int32_t cur_rank = get_rank(g, tc->sendbuf_vert_thread[i]);
+//     comm->sendbuf_vert[tc->thread_starts[cur_rank]] = 
+//       tc->sendbuf_vert_thread[i];
+//     comm->sendbuf_vert[tc->thread_starts[cur_rank]+1] = 
+//       tc->sendbuf_vert_thread[i+1];
+//     comm->sendbuf_vert[tc->thread_starts[cur_rank]+2] = 
+//       tc->sendbuf_vert_thread[i+2];
+//     tc->thread_starts[cur_rank] += 3;
+//   }
+  
+//   for (int32_t i = 0; i < nprocs; ++i)
+//   {
+//     tc->thread_starts[i] = 0;
+//     tc->sendcounts_thread[i] = 0;
+//   }
+//   tc->thread_queue_size = 0;
+// }
 
 inline void exchange_lca(dist_graph_t* g, mpi_data_t* comm)
 {
@@ -369,6 +453,8 @@ inline void exchange_lca(dist_graph_t* g, mpi_data_t* comm)
   comm->total_recv = 0;
   for (int i = 0; i < nprocs; ++i)
     comm->total_recv += comm->recvcounts_temp[i];
+  
+  if (debug) printf("Task %d total_recv %lu\n", procid, comm->total_recv);
 
   comm->recvbuf_vert = (uint64_t*)malloc(comm->total_recv*sizeof(uint64_t));
   if (comm->recvbuf_vert == NULL)

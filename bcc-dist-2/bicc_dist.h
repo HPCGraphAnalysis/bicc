@@ -47,6 +47,8 @@
 
 #include <stdint.h>
 
+#include "dist_graph.h"
+
 //typedef int64_t pulp_int;
 //typedef double pulp_real;
 
@@ -68,32 +70,6 @@ typedef struct {
 
   int pulp_seed;
 } pulp_part_control_t;
-
-
-struct dist_graph_t {
-  uint64_t n;
-  uint64_t m;
-  uint64_t m_local;
-
-  uint64_t n_local;
-  uint64_t n_offset;
-  uint64_t n_ghost;
-  uint64_t n_total;
-
-  uint64_t max_degree_vert;
-  uint64_t max_degree;
-
-  uint64_t* out_edges;
-  uint64_t* out_degree_list;
-  uint64_t* ghost_degrees;
-
-  uint64_t* local_unmap;
-  uint64_t* ghost_unmap;
-  uint64_t* ghost_tasks;
-  fast_map* map;
-} ;
-#define out_degree(g, n) (g->out_degree_list[n+1] - g->out_degree_list[n])
-#define out_vertices(g, n) &g->out_edges[g->out_degree_list[n]]
 
 
 extern "C" int bicc_dist_run(dist_graph_t* g);

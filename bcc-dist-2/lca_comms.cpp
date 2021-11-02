@@ -97,8 +97,8 @@ void init_thread_lca(lca_data_thread_t* lcat)
   //if (debug) { printf("Task %d init_thread_queue() start\n", procid); }
 
   lcat->tid = omp_get_thread_num();
-  lcat->thread_queue = (uint64_t*)malloc(THREAD_QUEUE_SIZE*sizeof(uint64_t));
-  lcat->thread_finish = (uint64_t*)malloc(THREAD_QUEUE_SIZE*sizeof(uint64_t));
+  lcat->thread_queue = (uint64_t*)malloc(LCA_THREAD_QUEUE_SIZE*sizeof(uint64_t));
+  lcat->thread_finish = (uint64_t*)malloc(LCA_THREAD_QUEUE_SIZE*sizeof(uint64_t));
   if (lcat->thread_queue == NULL || lcat->thread_send == NULL)
     throw_err("init_thread_lca_data(), unable to allocate resources\n", procid, lcat->tid);
 

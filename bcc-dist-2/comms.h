@@ -60,7 +60,7 @@ extern int procid, nprocs;
 extern bool verbose, debug, verify;
 
 #define MAX_SEND_SIZE 2147483648
-#define THREAD_QUEUE_SIZE 1024
+#define THREAD_QUEUE_SIZE 6144
 
 struct mpi_data_t {
   int32_t* sendcounts;
