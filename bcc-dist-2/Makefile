@@ -1,6 +1,6 @@
 MPICXX = mpicxx
-CXXFLAGS = -fopenmp -g -O0 -Wall
-LINKFLAGS = -fopenmp -g -O0 -Wall
+CXXFLAGS = -fopenmp -g -O3 -Wall
+LINKFLAGS = -fopenmp -g -O3 -Wall
 TARGET = bicc
 LIBTARGET = libbicc.a
 TOCOMPILE = util.o generate.o fast_map.o dist_graph.o comms.o io_pp.o main.o
