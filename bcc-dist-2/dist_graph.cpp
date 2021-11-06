@@ -794,6 +794,7 @@ int determine_edge_block(dist_graph_t* g, int32_t*& part_list)
   uint64_t m_per_rank = g->m*2 / (uint64_t)nprocs;
   uint64_t running_sum = 0;
   int32_t cur_rank = 0;
+  g->n_offsets[0] = 0;
   for (uint64_t i = 0; i < g->n; ++i) {
     part_list[i] = cur_rank;
     
@@ -801,8 +802,10 @@ int determine_edge_block(dist_graph_t* g, int32_t*& part_list)
     if (running_sum > m_per_rank) {
       running_sum = 0;
       cur_rank++;
+      g->n_offsets[cur_rank] = i+1;
     }
   }
+  g->n_offsets[nprocs] = g->n;
   
   delete [] global_degrees;
   
