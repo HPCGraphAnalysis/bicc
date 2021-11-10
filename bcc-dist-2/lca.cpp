@@ -81,8 +81,8 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   lcaq->finish_size = 0;    
   for (int32_t i = 0; i < nprocs; ++i)
     comm->sendcounts_temp[i] = 0;
-
-  comm->global_queue_size = 1;
+ 
+ comm->global_queue_size = 1;
 #pragma omp parallel default(shared)
 {
   lca_thread_data_t lcat;
@@ -239,6 +239,14 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp single
 {
     exchange_lca(g, comm);
+    if (comm->total_recv >= lcaq->queue_length) {
+      if (debug) printf("%d realloc: %li %li\n", procid, comm->total_recv, lcaq->queue_length);
+      lcaq->queue_length = comm->total_recv;
+      lcaq->queue = (uint64_t*)realloc(lcaq->queue, lcaq->queue_length*sizeof(uint64_t));
+      lcaq->queue_next = (uint64_t*)realloc(lcaq->queue_next, lcaq->queue_length*sizeof(uint64_t));
+      if (lcaq->queue == NULL || lcaq->queue_next == NULL)// || lcaq->finish == NULL)
+        throw_err("realloc() queues, unable to allocate resources\n",procid);
+    }
     memcpy(lcaq->queue, comm->recvbuf_vert, comm->total_recv*sizeof(uint64_t));
     clear_recvbuf_lca(comm);
     MPI_Allreduce(&comm->total_recv, &comm->global_queue_size, 1,
