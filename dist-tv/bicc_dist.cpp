@@ -382,15 +382,15 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       uint64_t global = 0;
       if(i < g->n_local) global = g->local_unmap[i];
       else global = g->ghost_unmap[i-g->n_local];
-      std::cout<<"Rank "<<procid<<"'s vertex "<<global<<" has label "<<preorder[i]<<"\n";
+      //std::cout<<"Rank "<<procid<<"'s vertex "<<global<<" has label "<<preorder[i]<<"\n";
     }
-
     communicate_preorder_labels(g,frontier,preorder);
     int local_done = frontier.size();
     MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     std::cout<<"global number of vertices in frontiers: "<<global_done<<"\n";
     global_done = !global_done;
   }
+  std::cout<<"Vertex 855762 has parent "<<parents[855762]<<" n_desc "<<n_desc[855762]<< " and level "<<levels[855762]<<"\n";
   //go level-by-level on each process, communicating after each level is completed.
   /*int max_level = 0;
   for(int i = 0; i < g->n_local; i++){

@@ -172,14 +172,14 @@ int load_graph_edges_64(char *input_filename, graph_gen_data_t *ggi,
   uint64_t file_size = ftell(infp);
   fseek(infp, 0L, SEEK_SET);
 
-  uint64_t nedges_global = file_size/(2*sizeof(uint32_t));
+  uint64_t nedges_global = file_size/(2*sizeof(uint64_t));
   ggi->m = nedges_global;
 
-  uint64_t read_offset_start = procid*2*sizeof(uint32_t)*(nedges_global/nprocs);
-  uint64_t read_offset_end = (procid+1)*2*sizeof(uint32_t)*(nedges_global/nprocs);
+  uint64_t read_offset_start = procid*2*sizeof(uint64_t)*(nedges_global/nprocs);
+  uint64_t read_offset_end = (procid+1)*2*sizeof(uint64_t)*(nedges_global/nprocs);
 
   if (procid == nprocs - 1)
-    read_offset_end = 2*sizeof(uint32_t)*nedges_global;
+    read_offset_end = 2*sizeof(uint64_t)*nedges_global;
 
   uint64_t nedges = (read_offset_end - read_offset_start)/8;
   ggi->m_local_read = nedges;
@@ -193,7 +193,7 @@ int load_graph_edges_64(char *input_filename, graph_gen_data_t *ggi,
     throw_err("load_graph_edges(), unable to allocate buffer", procid);
 
   fseek(infp, read_offset_start, SEEK_SET);
-  if (!fread(gen_edges, nedges, 2*sizeof(uint32_t), infp))    
+  if (!fread(gen_edges, nedges, 2*sizeof(uint64_t), infp))    
     throw_err("Error: load_graph_edges_64(), can't read input file");
   fclose(infp);
 
