@@ -202,9 +202,51 @@ void reduce_label(dist_graph_t* g, const std::vector<uint64_t>& entry, std::queu
   redux_send_queue.push(entry);
 }
 
-void communicate_redux(std::queue<std::vector<uint64_t>>& redux_send_queue, std::queue<std::vector<uint64_t>>* next_redux_queue){
+void communicate_redux(std::queue<std::vector<uint64_t>>* redux_send_queue, std::queue<std::vector<uint64_t>>* next_redux_queue){
   //read each entry, send to the current owner.
+  int* sendcnts = new int[nprocs];
+  int* recvcnts = new int[nprocs];
+  for(int i = 0; i < nprocs; i++){
+    sendcnts[i] = 0;
+    recvcnts[i] = 0;
+  }
+  int queue_size = redux_send_queue->size();
+  for(int i = 0; i < queue_size; i++){
+    std::vector<uint64_t> curr_entry = redux_send_queue->front();
+    redux_send_queue->pop();
+    sendcnts[curr_entry[2]] += curr_entry.size();
+    redux_send_queue->push(curr_entry);
+  } 
+
+  MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
   
+  int sendsize = 0;
+  int recvsize = 0;
+  int* sdispls = new int[nprocs+1];
+  int* rdispls = new int[nprocs+1];
+  sdispls[0] = 0;
+  rdispls[0] = 0;
+  for(int i = 1; i <= nprocs; i++){
+    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
+    sendsize += sendcnts[i-1];
+    recvsize += recvcnts[i-1];
+  }
+
+  int* sendbuf = new int[sendsize];
+  int* recvbuf = new int[recvsize];
+  int sendidx[nprocs];
+  for(int i = 0; i < nprocs; i++) sendidx[i] = sdispls[i];
+  
+  while(redux_send_queue->size() > 0){
+    std::vector<uint64_t> curr_entry = redux_send_queue->front();
+    redux_send_queue->pop();
+
+    //add curr_entry to the sendbuf
+  }
+
+  //MPI_Alltoallv
+
   //on recv, update local labels for traversals that have finished (sent to this proc but multi-labeled and lowest owner is not procid)
   //also put in-progress traversals on the next_redux_queue
 }
