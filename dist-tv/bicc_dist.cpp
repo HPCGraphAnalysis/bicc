@@ -235,9 +235,22 @@ void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier
   //std::cout<<"Rank "<<procid<<"'s frontier size = "<<frontier.size()<<"\n";
 }
 
-extern "C" int calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* parents, uint64_t* n_descendants){
-  std::cout<<"Calculating Descendants\n";
-  for(int i = 0; i < g->n_total; i++) n_descendants[i] = 0;
+void preorder_label_recursive(dist_graph_t* g,uint64_t* parents, uint64_t* preorder, uint64_t currVtx, uint64_t& preorderIdx){
+  preorder[currVtx] = preorderIdx;
+  int out_degree = out_degree(g, currVtx);
+  uint64_t* outs = out_vertices(g, currVtx);
+  for(int i = 0; i < out_degree; i++){
+    uint64_t nbor = outs[i];
+    if(parents[nbor] == currVtx && preorder[nbor] == NULL_KEY){
+      preorderIdx++;
+      preorder_label_recursive(g,parents,preorder,nbor,preorderIdx);
+    }
+  }
+}
+
+extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* parents, uint64_t* n_descendants){
+  std::cout<<"Calculating Descendants for all "<<g->n<<" vertices\n";
+  for(int i = 0; i < g->n_total; i++) n_descendants[i] = NULL_KEY;
   std::queue<uint64_t> primary_frontier;
   std::queue<uint64_t> secondary_frontier;
   std::queue<uint64_t>* currQueue = &primary_frontier;
@@ -249,26 +262,30 @@ extern "C" int calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_da
   while (!global_done){
     while(currQueue->size() > 0){
       uint64_t currVert = currQueue->front();
-      std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
+      //std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
       currQueue->pop();
-      if(n_descendants[currVert] != 0) continue;
+      if(n_descendants[currVert] != NULL_KEY) continue;
       int out_degree = out_degree(g,currVert);
       int children = 0;
       int children_computed = 0;
-      int n_desc = 1;
+      uint64_t n_desc = 0;
       uint64_t* outs = out_vertices(g, currVert);
+      std::set<uint64_t> visited_nbors;
       for(int i = 0; i < out_degree; i++){
         uint64_t nbor_local = outs[i];
+	if(visited_nbors.count(nbor_local) > 0) continue;
         if(parents[nbor_local] == g->local_unmap[currVert]){
           children++;
-          if(n_descendants[nbor_local] > 0){
+          if(n_descendants[nbor_local] != NULL_KEY){
             children_computed++;
             n_desc+=n_descendants[nbor_local];
           }
         }
+	visited_nbors.insert(nbor_local);
       }
       if(children_computed == children){
-        n_descendants[currVert] = n_desc;
+	if(currVert == 89194 || currVert == 471983) std::cout<<"Vertex "<<currVert<<" has "<<children<<"children and they have "<<n_desc<<" descedants, collectively\n";
+        n_descendants[currVert] = n_desc + children_computed;
         //if(get_value(g->map, parents[currVert]) < g->n_local){
         //  otherQueue->push(get_value(g->map, parents[currVert]));
         //}
@@ -364,17 +381,20 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
     while(frontier.size() > 0){
       uint64_t currVert = frontier.front();
       frontier.pop();
-      std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
+      //std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
       int out_degree = out_degree(g,currVert);
       uint64_t* outs = out_vertices(g,currVert);
       uint64_t child_label = preorder[currVert]+1;
+      std::set<uint64_t> visited_nbors;
       for(int nbor = 0; nbor < out_degree; nbor++){
         uint64_t nborVert = outs[nbor];
+	if(visited_nbors.count(nborVert) > 0) continue;
         if(parents[nborVert] == g->local_unmap[currVert]){
           preorder[nborVert] = child_label;
-          child_label += n_desc[nborVert];
+          child_label += n_desc[nborVert]+1;
           if(nborVert < g->n_local) frontier.push(nborVert);
         }
+	visited_nbors.insert(nborVert);
       }
     }
     
@@ -382,15 +402,16 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       uint64_t global = 0;
       if(i < g->n_local) global = g->local_unmap[i];
       else global = g->ghost_unmap[i-g->n_local];
-      std::cout<<"Rank "<<procid<<"'s vertex "<<global<<" has label "<<preorder[i]<<"\n";
+      //std::cout<<"Rank "<<procid<<"'s vertex "<<global<<" has label "<<preorder[i]<<"\n";
     }
 
     communicate_preorder_labels(g,frontier,preorder);
     int local_done = frontier.size();
     MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    std::cout<<"global number of vertices in frontiers: "<<global_done<<"\n";
+    //std::cout<<"global number of vertices in frontiers: "<<global_done<<"\n";
     global_done = !global_done;
   }
+
   //go level-by-level on each process, communicating after each level is completed.
   /*int max_level = 0;
   for(int i = 0; i < g->n_local; i++){
@@ -441,17 +462,20 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
   std::queue<uint64_t> secondary_frontier;
   std::queue<uint64_t>* currQueue = &primary_frontier;
   std::queue<uint64_t>* otherQueue = &secondary_frontier;
+  std::set<uint64_t> verts_in_queue; 
   //put all owned leaves on a frontier
   for(int i = 0; i < g->n_local; i++){
     primary_frontier.push(i);
+    verts_in_queue.insert(i);
   }
   int global_done = 0;
-  
   //while the number of vertices in the global queues is not zero
   while(!global_done){
     //while the primary queue is not empty
     while(currQueue->size() > 0){
       uint64_t currVert = currQueue->front();
+      verts_in_queue.erase(currVert);
+      std::cout<<"HIGH-LOW visiting vtx "<<currVert<<"\n";
       currQueue->pop();
       //if the vertex was previously computed, skip
       if(highs[currVert] != 0 && lows[currVert] != 0) continue;
@@ -461,8 +485,11 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       
       int out_degree = out_degree(g,currVert);
       uint64_t* outs = out_vertices(g,currVert);
+      std::set<uint64_t> nbors_visited;
       for(int nborIdx = 0; nborIdx < out_degree; nborIdx++){
         uint64_t local_nbor = outs[nborIdx];
+	if(nbors_visited.count(local_nbor) > 0) continue;
+	nbors_visited.insert(local_nbor);
         uint64_t global_nbor = 0;
         if(local_nbor < g->n_local) global_nbor = g->local_unmap[local_nbor];
         else global_nbor = g->ghost_unmap[local_nbor-g->n_local];
@@ -488,11 +515,15 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
         highs[currVert] = high;
         lows[currVert] = low;
         uint64_t local_parent = get_value(g->map, parents[currVert]);
-        if(local_parent < g->n_local){
+        if(local_parent < g->n_local && verts_in_queue.count(local_parent) == 0){
           otherQueue->push(local_parent);
+	  verts_in_queue.insert(local_parent);
         }
       } else {
-        otherQueue->push(currVert);
+        if(verts_in_queue.count(currVert) == 0){
+	  otherQueue->push(currVert);
+	  verts_in_queue.insert(currVert);
+	}
       }
     }
     //communicate the highs and lows using the frontier comm function, secondary queue as input
@@ -564,8 +595,11 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   std::cout<<"Calculating the number of edges in the aux graph\n";  
   //count self edges for each tree edge (maybe nontree edges are necessary as well, maybe not. We'll see).
   for(uint64_t v = 0; v < g->n_local; v++){
+    std::set<uint64_t> nbors_visited;
     for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
       uint64_t w = g->out_edges[w_idx];
+      if(nbors_visited.count(w) >0) continue;
+      nbors_visited.insert(w);
       uint64_t w_global = 0;
       if(w<g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
@@ -578,8 +612,11 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   }
   //non self-edges
   for(uint64_t v = 0; v < g->n_local; v++){
+    std::set<uint64_t> nbors_visited;
     for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
       uint64_t w = g->out_edges[j];
+      if(nbors_visited.count(w) > 0) continue;
+      nbors_visited.insert(w);
       uint64_t w_global = 0;
       if(w<g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
@@ -622,8 +659,11 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   std::cout<<"Creating srcs and dsts arrays\n";
   //self edges
   for(uint64_t v = 0; v < g->n_local; v++){
+    std::set<uint64_t> nbors_visited;
     for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
       uint64_t w = g->out_edges[w_idx];
+      if(nbors_visited.count(w) >0) continue;
+      nbors_visited.insert(w);
       uint64_t w_global = 0;
       if(w<g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
@@ -649,8 +689,11 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
   //non-self edges
   for(uint64_t v = 0; v < g->n_local; v++){
+    std::set<uint64_t> nbors_visited;
     for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
       uint64_t w = g->out_edges[j];//w is local, not preorder
+      if(nbors_visited.count(w) > 0) continue;
+      nbors_visited.insert(w);
       uint64_t w_global = 0;
       if(w < g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
@@ -1037,38 +1080,44 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
     if(n_unlabeled > 0) propProc = procid;
     int global_propProc = -1;
     MPI_Allreduce(&propProc, &global_propProc, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    //std::cout<<"Rank "<<procid<<" global_propProc = "<<global_propProc<<"\n";
+    std::cout<<"Rank "<<procid<<" global_propProc = "<<global_propProc<<"\n";
     //the selected process propagates from any unlabeled vertex, creating a frontier as it goes.
     std::queue<uint64_t> frontier;
+    std::set<uint64_t> verts_in_frontier;
     if(global_propProc == procid){
       for(int i = 0; i < aux_g->n_local; i++){
         if(labels[i] == 0){
           frontier.push(i);
+	  verts_in_frontier.insert(i);
           break;
         }
       }
     }
     uint64_t currLabel = global_propProc + nprocs*round;
   //isn't   //while this propagation is not finished, do local work
+    
     while(!global_done){
       while(frontier.size() > 0){
         uint64_t currVert = frontier.front();
         frontier.pop();
+	verts_in_frontier.erase(currVert);
         if(labels[currVert] == 0){
           labels[currVert] = currLabel;
           std::pair<uint64_t, uint64_t> edge = auxVertToEdge[currVert];
-          //std::cout<<"Rank "<<procid<<" labeled {"<<edge.first<<", "<<edge.second<<"} with label "<<currLabel<<"\n";
+          std::cout<<"Rank "<<procid<<" labeled {"<<edge.first<<", "<<edge.second<<"} with label "<<currLabel<<"\n";
         }
         if(currVert < aux_g->n_local){ //we don't have adjacency info for ghosted verts
           int out_degree = out_degree(aux_g, currVert);
           uint64_t* outs = out_vertices(aux_g, currVert);
           for(int j = 0; j < out_degree; j++){
-            if(labels[outs[j]] == 0) {
+            if(labels[outs[j]] == 0 && verts_in_frontier.count(outs[j]) == 0) {
               //std::cout<<"Rank "<<procid<<" adding vertex "<<outs[j]<<" to the frontier\n";
               frontier.push(outs[j]);
+	      verts_in_frontier.insert(outs[j]);
             }
           }
         }
+	std::cout<<"Rank "<<procid<<" frontier.size() = "<<frontier.size()<<"\n";
       }
       //once the frontier is empty, communicate to all processes using the aux_communicate function
       //std::cout<<"Rank "<<procid<<" is starting communication\n";
@@ -1077,7 +1126,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
       global_done = 0;
       //std::cout<<"Rank "<<procid<<" starting communication\n";
       MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-      //std::cout<<"Rank "<<procid<<" number of vertices in the frontier "<<global_done<<"\n";
+      std::cout<<"Rank "<<procid<<" number of vertices in the frontier "<<global_done<<"\n";
       //if all frontiers are empty after communicating, this propagation is finished
       global_done = !global_done;
     }
@@ -1473,10 +1522,24 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }*/
   //2. calculate preorder labels for each owned vertex (using the number of descendants)
   //delete [] is_leaf;
+  /*uint64_t* preorder_recursive = new uint64_t[g->n_total];
+  for(int i = 0; i < g->n_total; i++) preorder_recursive[i] = NULL_KEY;
+  uint64_t pidx = 1;
+  preorder_label_recursive(g,parents,preorder_recursive, 3950,pidx);*/
+
   uint64_t* preorder = new uint64_t[g->n_total];
   for(int i = 0; i < g->n_total; i++) preorder[i] = 0;
   calculate_preorder(g,comm,q,levels,parents,n_desc,preorder); 
   std::cout<<"Finished calculating preorder labels\n";
+  /*for(int i = 0; i < g->n_total; i++){
+    std::cout<<"vertex "<<i<<" has preorder label "<<preorder_recursive[i]<<"\n";
+  }*/
+  /*for(int i = 0; i < g->n_total; i++){
+    if(preorder_recursive[i] != preorder[i]) {
+      std::cout<<"preorder labels differ at vertex "<<i<<"\n";
+      break;
+    }
+  }*/
   /*for(int i = 0; i < g->n_local; i++){
     printf("Rank %d: Vertex %d has a preorder label of %d \n",procid,g->local_unmap[i],preorder[i]);
   }
@@ -1534,6 +1597,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(int i = 0; i < g->m_local; i++) bicc_labels[i] = 0;
   finish_edge_labeling(g,aux_g,edgeToAuxVert,auxVertToEdge,preorder,parents,labels,bicc_labels);
   std::cout<<"Rank "<<procid<< " finished final edge labeling\n";
+  std::cout<<"aux_g->n = "<<aux_g->n_total<<" aux_g->m = "<<aux_g->m<<"\n";
   /*std::cout<<"Rank "<<procid<<" OUTPUTTING FINAL LABELS *********\n";>
   for(int i = 0; i < g->n_local; i++){
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
@@ -1552,9 +1616,9 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     uint64_t bicc = 0;
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       if(bicc == 0){
-        bicc = bicc_labels[j];
+        bicc = bicc_labels[g->out_edges[j]];
       } else {
-        if(bicc != bicc_labels[j]){
+        if(bicc != bicc_labels[g->out_edges[j]]){
           artpts[n_artpts++] = g->local_unmap[i];
           break;
         }
@@ -1593,9 +1657,10 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   status = MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
 
   if(procid == 0){
-    for(int i = 0; i < recvsize; i++){
+    std::cout<<"Found "<<recvsize<<" artpts\n";
+    /*for(int i = 0; i < recvsize; i++){
       std::cout<<"Vertex "<<recvbuf[i]<<" is an articulation point\n";
-    }
+    }*/
   }
 
   if (verbose) {
