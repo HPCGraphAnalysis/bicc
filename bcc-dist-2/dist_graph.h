@@ -69,6 +69,33 @@ struct graph_gen_data_t {
   uint64_t *gen_edges;
 };
 
+struct dist_graph_t {
+  uint64_t n;
+  uint64_t m;
+  uint64_t m_local;
+
+  uint64_t n_local;
+  uint64_t n_offset;
+  uint64_t n_ghost;
+  uint64_t n_total;
+
+  uint64_t max_degree_vert;
+  uint64_t max_degree;
+
+  uint64_t* out_edges;
+  uint64_t* out_degree_list;
+  uint64_t* ghost_degrees;
+
+  uint64_t* local_unmap;
+  uint64_t* ghost_unmap;
+  uint64_t* ghost_tasks;
+  uint64_t* n_offsets;
+  fast_map* map;
+} ;
+#define out_degree(g, n) (g->out_degree_list[n+1] - g->out_degree_list[n])
+#define out_vertices(g, n) &g->out_edges[g->out_degree_list[n]]
+
+
 int create_graph(graph_gen_data_t *ggi, dist_graph_t *g);
 
 int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g);
@@ -119,6 +146,34 @@ inline int32_t highest_less_than(uint64_t* prefix_sums, uint64_t val)
   }
 
   return rank;
+}
+
+inline int32_t get_rank(dist_graph_t* g, uint64_t vert)
+{
+  if (vert >= g->n_offsets[procid] && vert < g->n_offsets[procid+1])
+    return procid;
+  else {
+    bool found = false;
+    int32_t index = 0;
+    int32_t bound_low = 0;
+    int32_t bound_high = nprocs;
+    while (!found)
+    {
+      index = (bound_high + bound_low) / 2;
+      if (g->n_offsets[index] <= vert && g->n_offsets[index+1] > vert)
+      {
+        return index;
+      }
+      else if (g->n_offsets[index] <= vert)
+        bound_low = index+1;
+      else if (g->n_offsets[index] > vert)
+        bound_high = index;
+    }
+
+    return index;
+  }
+  
+  return -1;
 }
 
 #endif

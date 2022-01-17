@@ -1,10 +1,10 @@
 MPICXX = mpicxx
-CXXFLAGS = -fopenmp -g -Wall
-LINKFLAGS = -fopenmp -g -Wall
+CXXFLAGS = -fopenmp -g -O3 -Wall
+LINKFLAGS = -fopenmp -g -O3 -Wall
 TARGET = bicc
 LIBTARGET = libbicc.a
 TOCOMPILE = util.o generate.o fast_map.o dist_graph.o comms.o io_pp.o main.o
-FORLIBBICC = util.o generate.o fast_map.o dist_graph.o comms.o io_pp.o bfs.o lca.o bicc_dist.o art_pt_heuristic.o
+FORLIBBICC = util.o generate.o fast_map.o dist_graph.o comms.o io_pp.o bfs.o lca.o lca_comms.o bicc_dist.o art_pt_heuristic.o
 
 
 all: libbicc $(TOCOMPILE)

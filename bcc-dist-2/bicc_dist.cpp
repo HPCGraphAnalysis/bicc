@@ -113,7 +113,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   
   for(uint64_t i = 0; i < g->n_total; i++) potential_art_pts[i] = 0;
-  art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
+  //art_pt_heuristic(g,comm,q,parents,levels,potential_art_pts);
+  bicc_lca(g,comm,q,parents,levels,potential_art_pts);
+  int counter = 0;
+  for(uint64_t i = 0; i < g->n_local; i++)
+    if (potential_art_pts[i])
+      ++counter;
+    
+  printf("arts %d\n", counter);
  
   if(verbose) {
     MPI_Barrier(MPI_COMM_WORLD);
@@ -284,6 +291,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
 
   uint64_t* found_artpts = new uint64_t[g->n];
+  
   uint64_t g_artpts = 0;
   for(int i = 0; i < g->n; i++) {
     found_artpts[i] = 0;
@@ -294,6 +302,30 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     g_artpts++;
   }
   if(verbose && procid == 0) std::cout<<"found "<<g_artpts<<" art pts\n";
+
+  if(procid == 0){
+    uint64_t* known_artpts = new uint64_t[g->n];
+    for(int i = 0; i < g->n; i++) known_artpts[i] = 0;
+    std::ifstream ans("arts");
+    int art = 0;
+    while(ans >> art){
+      known_artpts[art] = 1;
+    }
+    uint64_t correct = 0;
+    uint64_t false_positives = 0;
+    uint64_t false_negatives = 0;
+    for(int i = 0; i < g->n; i++){
+      if(found_artpts[i] && known_artpts[i]) correct++;
+      if(found_artpts[i] && !known_artpts[i]) {
+        print_labels(g,i,LCA_labels,low_labels,potential_art_pts,levels);
+        false_positives++;
+      }
+      if(!found_artpts[i]&& known_artpts[i]) false_negatives++;
+    }
+    std::cout<<correct<<" correct artpts\n";
+    std::cout<<false_positives<<" false positives\n";
+    std::cout<<false_negatives<<" false negatives\n";
+  }
 
   if (verbose) {
     MPI_Barrier(MPI_COMM_WORLD);

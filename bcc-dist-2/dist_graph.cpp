@@ -75,6 +75,10 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
   g->m = ggi->m;
   g->m_local = ggi->m_local_edges;
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
+  g->n_offsets = (uint64_t*)malloc((nprocs+1)*sizeof(uint64_t));
+  MPI_Allgather(&g->n_offset, 1, MPI_UINT64_T, g->n_offsets, 1, 
+    MPI_UINT64_T, MPI_COMM_WORLD);
+  g->n_offsets[nprocs] = g->n;
 
   uint64_t* out_edges = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
   uint64_t* out_degree_list = (uint64_t*)malloc((g->n_local+1)*sizeof(uint64_t));
@@ -141,6 +145,10 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
   g->n_ghost = 0;
   g->n_total = g->n_local;
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
+  g->n_offsets = (uint64_t*)malloc(2*sizeof(uint64_t));
+  g->n_offsets[0] = 0;
+  g->n_offsets[1] = g->n_local;
+
 
   uint64_t* out_edges = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
   uint64_t* out_degree_list = (uint64_t*)malloc((g->n_local+1)*sizeof(uint64_t));
@@ -772,11 +780,11 @@ int determine_edge_block(dist_graph_t* g, int32_t*& part_list)
 {
   uint64_t* global_degrees = new uint64_t[g->n];  
 #pragma omp parallel for
-  for (int i = 0; i < g->n; ++i)
+  for (uint64_t i = 0; i < g->n; ++i)
     global_degrees[i] = 0;
   
 #pragma omp parallel for
-  for (int i = 0; i < g->n_local; ++i)
+  for (uint64_t i = 0; i < g->n_local; ++i)
     global_degrees[g->local_unmap[i]] = out_degree(g, i);
   
   MPI_Allreduce(MPI_IN_PLACE, global_degrees, g->n, 
@@ -786,15 +794,18 @@ int determine_edge_block(dist_graph_t* g, int32_t*& part_list)
   uint64_t m_per_rank = g->m*2 / (uint64_t)nprocs;
   uint64_t running_sum = 0;
   int32_t cur_rank = 0;
-  for (int i = 0; i < g->n; ++i) {
+  g->n_offsets[0] = 0;
+  for (uint64_t i = 0; i < g->n; ++i) {
     part_list[i] = cur_rank;
     
     running_sum += global_degrees[i];
     if (running_sum > m_per_rank) {
       running_sum = 0;
       cur_rank++;
+      g->n_offsets[cur_rank] = i+1;
     }
   }
+  g->n_offsets[nprocs] = g->n;
   
   delete [] global_degrees;
   

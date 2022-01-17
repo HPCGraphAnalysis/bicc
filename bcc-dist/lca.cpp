@@ -62,7 +62,7 @@ extern bool verbose, debug, verify, output;
 
 int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, 
             uint64_t* parents, uint64_t* levels, 
-            uint64_t* highs, uint64_t* high_levels)
+            uint64_t* highs, uint64_t* high_levels, uint64_t* art_pt_flags)
 {  
   if (debug) { printf("procid %d bicc_lca() start\n", procid); }
   double elt = 0.0;
@@ -71,6 +71,7 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     elt = omp_get_wtime();
   }
 
+  bool* traversed_to_parent = new bool[g->n_total];
   lca_queue_data_t* lcaq = new lca_queue_data_t;
   init_queue_lca(g, lcaq);
 
@@ -80,7 +81,6 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   for (int32_t i = 0; i < nprocs; ++i)
     comm->sendcounts_temp[i] = 0;
 
-  uint64_t level = 0;
   comm->global_queue_size = 1;
 #pragma omp parallel default(shared)
 {
@@ -96,7 +96,14 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp for
   for (uint64_t i = 0; i < g->n_total; ++i)
     if (parents[i] != NULL_KEY)
-      high_levels[i] = levels[get_value(g->map, parents[i])];
+      high_levels[i] = levels[i]-1;
+
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_total; ++i)
+    art_pt_flags[i] = 0;
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_total; ++i)
+    traversed_to_parent[i] = false;
 
 #pragma omp for schedule(guided) nowait
   for (uint64_t i = 0; i < g->n_local; ++i) {
@@ -117,9 +124,28 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
       if (out > vert) {
         if (highs[out_index] != highs[vert_index] && 
             highs[out_index] != vert && highs[vert_index] != out) {
-          add_to_lca(&lcat, lcaq, 
-            vert, parents[vert_index], levels[vert_index]-1,
-            out, parents[out_index], levels[out_index]-1);
+
+          if (levels[vert_index] >= levels[out_index])
+            add_to_lca(&lcat, lcaq, 
+              vert, vert, levels[vert_index],
+              out, out, levels[out_index]);
+          else
+            add_to_lca(&lcat, lcaq, 
+              out, out, levels[out_index],
+              vert, vert, levels[vert_index]);
+
+          // if (levels[vert_index] == levels[out_index])
+          //   add_to_lca(&lcat, lcaq, 
+          //     vert, parents[vert_index], levels[vert_index]-1,
+          //     out, parents[out_index], levels[out_index]-1);
+          // else if (levels[vert_index] > levels[out_index])
+          //   add_to_lca(&lcat, lcaq, 
+          //     vert, parents[vert_index], levels[vert_index]-1,
+          //     out, out, levels[out_index]);
+          // else
+          //   add_to_lca(&lcat, lcaq, 
+          //     out, parents[out_index], levels[out_index]-1,
+          //     vert, vert, levels[vert_index]);
         }
       }
     }
@@ -160,41 +186,52 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
       uint64_t pred2 = lcaq->queue[i+4];
       uint64_t level2 = lcaq->queue[i+5];
 
-      uint64_t pred1_index = get_value(g->map, vert1);
-      uint64_t pred2_index = get_value(g->map, vert2);
-      if (pred1_index != NULL_KEY && pred2_index != NULL_KEY) {
+      //printf("Q %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+      //  procid, i, vert1, pred1, level1, vert2, pred2, level2);
+      uint64_t pred1_index = get_value(g->map, pred1);
+      uint64_t pred2_index = get_value(g->map, pred2);
+      if (pred1 == pred2) {
+        //printf("Fa %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+        //  procid, i, vert1, pred1, level1, vert2, pred2, level2);
+        add_to_finish(&lcat, lcaq, vert1, pred1, level1);
+        add_to_finish(&lcat, lcaq, vert2, pred2, level2);
+        art_pt_flags[pred1] = 1;
+        //printf("Fb %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+        //  procid, i, vert1, pred1, level1, vert2, pred2, level2);
+      }
+      else if (pred1_index != NULL_KEY && pred2_index != NULL_KEY &&
+                level1 == level2) {
+        //printf("L0a %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+        //  procid, i, vert1, pred1, level1, vert2, pred2, level2);
         pred1 = parents[pred1_index];
         pred2 = parents[pred2_index];
-
-        if (pred1 == pred2) {
-          add_to_finish(&lcat, lcaq, vert1, pred1, level1-1);
-          add_to_finish(&lcat, lcaq, vert2, pred2, level2-1);
-        }
-        else {
-          add_to_lca(&lcat, lcaq, 
-            vert1, pred1, level1-1, 
-            vert2, pred2, level2-1);
-        }
-      }
+        traversed_to_parent[pred1_index] = true;
+        traversed_to_parent[pred2_index] = true;
+        add_to_lca(&lcat, lcaq, 
+          vert1, pred1, level1-1, 
+          vert2, pred2, level2-1);
+        //printf("L0b %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+        //  procid, i, vert1, pred1, level1-1, vert2, pred2, level2-1);
+      } 
       else if (pred1_index != NULL_KEY) {
+        assert(level1 >= level2);
+        //printf("L1a %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+        //  procid, i, vert1, pred1, level1, vert2, pred2, level2);
         pred1 = parents[pred1_index];
-
-        if (pred1 == pred2) {
-          add_to_finish(&lcat, lcaq, vert1, pred1, level1-1);
-          add_to_finish(&lcat, lcaq, vert2, pred2, level2-1);
-        }
-        else {
-          add_to_lca(&lcat, lcaq, 
-            vert2, pred2, level2, 
-            vert1, parents[pred1_index], level1-1);
-        }
+        traversed_to_parent[pred1_index] = true;
+        add_to_lca(&lcat, lcaq, 
+          vert2, pred2, level2, 
+          vert1, pred1, level1-1);
+        //printf("L1b %d %lu , %lu %lu %lu | %lu %lu %lu\n", 
+        //  procid, i, vert1, pred1, level1-1, vert2, pred2, level2);
       }
       else
-        printf("Shit fucked\n");
+        printf("Shit fucked %d %lu %lu %lu %lu %lu %lu\n", 
+          procid, vert1, pred1, level1, vert2, pred2, level2);
     }  
 
     empty_lca_queue(&lcat, lcaq);
-    empty_finish(&lcat, lcaq);
+    empty_finish_queue(&lcat, lcaq);
 #pragma omp barrier
 
 
@@ -247,7 +284,7 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp single
 {
     exchange_lca(g, comm);
-    memcpy(lcaq->queue, comm->recvbuf_vert, comm->total_recv);
+    memcpy(lcaq->queue, comm->recvbuf_vert, comm->total_recv*sizeof(uint64_t));
     clear_recvbuf_lca(comm);
     comm->global_queue_size = comm->total_recv;
     lcaq->queue_size = comm->total_recv;
@@ -263,13 +300,16 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp for schedule(guided) nowait
     for (uint64_t i = 0; i < lcaq->finish_size; i+=3) {      
       uint64_t vert_index = get_value(g->map, lcaq->finish[i]);
-      update_sendcounts_thread(g, &tc, vert_index);
+      if (vert_index < g->n_local)
+        tc.sendcounts_thread[procid] += 3;
+      else
+        tc.sendcounts_thread[g->ghost_tasks[vert_index-g->n_local]] += 3;
     }
 
     for (int32_t i = 0; i < nprocs; ++i)
     {
 #pragma omp atomic
-      comm->sendcounts_temp[i] += tc.sendcounts_thread[i]*3;
+      comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
 
       tc.sendcounts_thread[i] = 0;
     }
@@ -291,7 +331,8 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
         send_rank = g->ghost_tasks[vert_index-g->n_local];
 
       tc.sendcounts_thread[send_rank] += 3;
-      update_lca_finish(g, &tc, comm, lcaq, i, send_rank);
+      update_lca_finish(&tc, comm, lcaq, i, send_rank);
+      //update_lca_finish(g, &tc, comm, lcaq, i, send_rank);
     }
 
     empty_lca_finish(&tc, comm, lcaq);
@@ -300,7 +341,7 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp single
 {
     exchange_lca(g, comm);
-    memcpy(lcaq->finish, comm->recvbuf_vert, comm->total_recv);
+    memcpy(lcaq->finish, comm->recvbuf_vert, comm->total_recv*sizeof(uint64_t));
     clear_recvbuf_lca(comm);
     comm->global_queue_size += comm->total_recv;
     lcaq->finish_size = comm->total_recv;
@@ -318,6 +359,16 @@ int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 
   clear_thread_lca(&lcat);
   clear_thread_comm(&tc);
+
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_local; ++i) {
+    if (!traversed_to_parent[i]) {
+      art_pt_flags[i] = 1;
+      uint64_t parent_index = get_value(g->map, parents[i]);
+      art_pt_flags[parent_index] = 1;
+    }
+  }
+
 } // end parallel
 
   clear_queue_lca(lcaq);

@@ -51,9 +51,7 @@
 #include "dist_graph.h"
 #include "comms.h"
 
-int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
-            uint64_t* parents, uint64_t* levels, 
-            uint64_t* highs, uint64_t* high_levels);
-
+int bicc_lca(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, 
+            uint64_t* parents, uint64_t* levels, uint64_t* art_pt_flags);
 
 #endif
