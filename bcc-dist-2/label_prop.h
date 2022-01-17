@@ -312,7 +312,9 @@ void communicate_redux(dist_graph_t* g, std::queue<std::vector<uint64_t>>* redux
       }
       if(potential_artpts[lid]){
         potential_artpt_did_prop_lower[lid] = false;
-      } 
+      }
+      if(lid == 816028) std::cout<<"Reduced vertex "<<lid<<"\n";
+      next_prop_queue->push(lid); 
       //do nothing, this traversal is done.
     } else {
       //construct entry, and find owner of lowest LCA
@@ -410,6 +412,16 @@ void pass_labels(dist_graph_t* g,uint64_t curr_vtx, uint64_t nbor, std::vector<s
 		 std::queue<uint64_t>* prop_queue, std::queue<uint64_t>* next_prop_queue, std::set<uint64_t>& verts_to_send,
 		 std::unordered_map<uint64_t, std::set<int>>& procs_to_send,
 		 bool full_reduce, bool reduction_needed){
+  if(curr_vtx == 816028 && nbor == 815634){
+    std::cout<<curr_vtx<<" passing labels to "<<nbor<<"\n";
+    std::cout<<"full_reduce = "<<full_reduce<<" reduction_needed = "<<reduction_needed<<"\n";
+    std::cout<<"LCA_labels[curr_vtx].size() = "<<LCA_labels[curr_vtx].size()<<"\n";
+    std::cout<<"LCA_labels[curr_vtx]: ";
+    for(auto it = LCA_labels[curr_vtx].begin(); it != LCA_labels[curr_vtx].end(); it++){
+      std::cout<<*it<<" ";
+    }
+    std::cout<<"\n";
+  }
   //if curr_vert is an potential_artpt
   //  if nbor has a level <= curr_vert
   //    pass received LCA labels to nbor (if different)
@@ -908,22 +920,22 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       /*if(curr_redux_queue->size() == 42019){
         std::cout<<" first reduction has gid "<<curr_reduction[0]<<"\n";
       }*/
-      if(curr_reduction[0] == 243){
+      /*if(curr_reduction[0] == 243){
         std::cout<<"entry size = "<<curr_reduction.size()<<"\n";
         std::cout<<"before reduction, vertex "<<curr_reduction[0]<<" has labels:\n";
         for(auto it = LCA_labels[curr_reduction[0]].begin(); it != LCA_labels[curr_reduction[0]].end(); it++){
           std::cout<<*it<<" ";
         }
         std::cout<<"\n";
-      }
+      }*/
       reduce_label(g, curr_reduction,redux_send_queue, LCA_labels, LCA_owner, levels, remote_levels); 
-      if(curr_reduction[0] == 243){
+      /*if(curr_reduction[0] == 243){
         std::cout<<"after reduction, vertex "<<curr_reduction[0]<<" has labels:\n";
         for(auto it = LCA_labels[curr_reduction[0]].begin(); it != LCA_labels[curr_reduction[0]].end(); it++){
           std::cout<<*it<<" (level "<<levels[*it]<<", has "<<LCA_labels[*it].size()<<" labels) ";
         }
         std::cout<<"\n";
-      }
+      }*/
 
 
       //TODO: Make sure that fully reduced LCA vertices (LCAs that had multiple labels but now only have 1)
@@ -937,8 +949,8 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       if(redux_till_done && curr_redux_queue->size() == 0){
         //std::cout<<"communicating reductions\n";
         communicate_redux(g,&redux_send_queue,next_redux_queue,LCA_labels, potential_artpt_did_prop_lower,
-                               potential_artpts, next_prop_queue,LCA_owner, remote_levels,irredux_queue);
-        std::cout<<"done communicating reductions, next_redux_queue->size() = "<<next_redux_queue->size()<<"\n";
+                               potential_artpts, curr_prop_queue,LCA_owner, remote_levels,irredux_queue);
+        //std::cout<<"done communicating reductions, next_redux_queue->size() = "<<next_redux_queue->size()<<"\n";
         /*std::cout<<"after communicating, vertex 1 has labels:\n";
         for(auto it = LCA_labels[1].begin(); it != LCA_labels[1].end(); it++){
           std::cout<<*it<<" ";
@@ -959,7 +971,7 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
 
     done = curr_prop_queue->size() + next_prop_queue->size() + curr_redux_queue->size() + next_redux_queue->size() + irredux_queue->size();
     MPI_Allreduce(&done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    std::cout<<"global done: "<<global_done<<"\n";
+    //std::cout<<"global done: "<<global_done<<"\n";
   }
   std::cout<<"Done reducing labels\n";
   //set the return values
@@ -980,7 +992,8 @@ void bcc_bfs_prop_driver(dist_graph_t *g,std::vector<uint64_t>& ghost_offsets, s
       }
     }
   }
-  std::cout<<"there are "<<num_unreduced<<" unreduced labels\n";
+  //std::cout<<"there are "<<num_unreduced<<" unreduced labels\n";
+  print_labels(g, 816028, LCA_labels, low_labels, potential_artpts, levels);
   /*int global_send_total = 0;
   MPI_Allreduce(&total_send_size, &global_send_total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   if(procid == 0){
