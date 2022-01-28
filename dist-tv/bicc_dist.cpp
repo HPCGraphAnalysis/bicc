@@ -157,7 +157,7 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
 }
 
 
-void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier, uint64_t* preorder){
+void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier, uint64_t* preorder, uint64_t sentinel){
   //communicate ghosts to owners and owned to ghosts
   int* sendcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++){
@@ -208,11 +208,11 @@ void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier
     int gid = recvbuf[exchangeIdx];
     int lid = get_value(g->map, gid);
     //std::cout<<"Rank "<<procid<<" received preorder label "<<recvbuf[exchangeIdx+1]<<" for vertex "<<gid<<"\n";
-    if(preorder[lid] == 0 && recvbuf[exchangeIdx + 1] != 0){
+    if(preorder[lid] == sentinel && recvbuf[exchangeIdx + 1] != sentinel){
       preorder[lid] = recvbuf[exchangeIdx+1];
       frontier.push(lid);
       //std::cout<<"Rank "<<procid<<" pushing vertex "<<gid<<" onto the local queue\n";
-    } else if (preorder[lid] != 0 && recvbuf[exchangeIdx+1]!=0 && preorder[lid] != recvbuf[exchangeIdx+1]) std::cout<<"*********sent and owned preorder labels mismatch*************\n";
+    } //else if (preorder[lid] != 0 && recvbuf[exchangeIdx+1]!=0 && preorder[lid] != recvbuf[exchangeIdx+1]) std::cout<<"*********sent and owned preorder labels mismatch*************\n";
     recvbuf[exchangeIdx+1] = preorder[lid];
   }
 
@@ -284,7 +284,7 @@ extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_d
 	visited_nbors.insert(nbor_local);
       }
       if(children_computed == children){
-	if(currVert == 89194 || currVert == 471983) std::cout<<"Vertex "<<currVert<<" has "<<children<<"children and they have "<<n_desc<<" descedants, collectively\n";
+	/*if(currVert == 89194 || currVert == 471983) std::cout<<"Vertex "<<currVert<<" has "<<children<<"children and they have "<<n_desc<<" descedants, collectively\n";*/
         n_descendants[currVert] = n_desc + children_computed;
         //if(get_value(g->map, parents[currVert]) < g->n_local){
         //  otherQueue->push(get_value(g->map, parents[currVert]));
@@ -294,7 +294,7 @@ extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_d
         otherQueue->push(currVert);
       }
     }
-    communicate_preorder_labels(g,*otherQueue, n_descendants);
+    communicate_preorder_labels(g,*otherQueue, n_descendants, NULL_KEY);
     int local_done = otherQueue->size();
     MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     global_done = !global_done;
@@ -404,7 +404,7 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       else global = g->ghost_unmap[i-g->n_local];
       //std::cout<<"Rank "<<procid<<"'s vertex "<<global<<" has label "<<preorder[i]<<"\n";
     }
-    communicate_preorder_labels(g,frontier,preorder);
+    communicate_preorder_labels(g,frontier,preorder,0);
     int local_done = frontier.size();
     MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     //std::cout<<"global number of vertices in frontiers: "<<global_done<<"\n";
@@ -470,10 +470,12 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
   //while the number of vertices in the global queues is not zero
   while(!global_done){
     //while the primary queue is not empty
+    //std::cout<<"global_done = "<<global_done<<"\n";
     while(currQueue->size() > 0){
+      //std::cout<<"curr_queue.size() = "<<currQueue->size()<<"\n";
       uint64_t currVert = currQueue->front();
       verts_in_queue.erase(currVert);
-      std::cout<<"HIGH-LOW visiting vtx "<<currVert<<"\n";
+      //std::cout<<"HIGH-LOW visiting vtx "<<currVert<<"\n";
       currQueue->pop();
       //if the vertex was previously computed, skip
       if(highs[currVert] != 0 && lows[currVert] != 0) continue;
@@ -484,6 +486,7 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       int out_degree = out_degree(g,currVert);
       uint64_t* outs = out_vertices(g,currVert);
       std::set<uint64_t> nbors_visited;
+      //std::cout<<"visiting neighbors\n";
       for(int nborIdx = 0; nborIdx < out_degree; nborIdx++){
         uint64_t local_nbor = outs[nborIdx];
 	if(nbors_visited.count(local_nbor) > 0) continue;
@@ -507,30 +510,43 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
           if(preorder[local_nbor] > high) high = preorder[local_nbor];
         }
       }
+      //std::cout<<"done visiting neighbors\n";
       //calculate the current vertex if possible, if not push it onto the secondary queue
       //if current vertex was calculated, push parent on the secondary frontier
       if(calculated){
+	//std::cout<<"inside calculated branch\n";
         highs[currVert] = high;
+	//std::cout<<"set highs[currVert] = "<<highs[currVert]<<"\n";
         lows[currVert] = low;
-        uint64_t local_parent = get_value(g->map, parents[currVert]);
+	//std::cout<<"set lows[currVert] = "<<lows[currVert]<<"\n";
+	//std::cout<<"parents[currVert] = "<<parents[currVert]<<"\n";
+	uint64_t local_parent = get_value(g->map, parents[currVert]);
+	//std::cout<<"local_parent = "<<local_parent<<"\n";
         if(local_parent < g->n_local && verts_in_queue.count(local_parent) == 0){
+	  //std::cout<<"inside branch inside calc\n";
           otherQueue->push(local_parent);
 	  verts_in_queue.insert(local_parent);
         }
       } else {
+	//std::cout<<"inside other branch\n";
         if(verts_in_queue.count(currVert) == 0){
 	  otherQueue->push(currVert);
 	  verts_in_queue.insert(currVert);
 	}
       }
+      //std::cout<<"done with vertex "<<currVert<<"\n";
     }
+    //std::cout<<"communicating preorder labels\n";
     //communicate the highs and lows using the frontier comm function, secondary queue as input
-    communicate_preorder_labels(g,*otherQueue,highs);
-    communicate_preorder_labels(g,*otherQueue,lows);
+    communicate_preorder_labels(g,*otherQueue,highs,0);
+    communicate_preorder_labels(g,*otherQueue,lows,0);
+    //std::cout<<"done communicating\n";
     //see if secondary queues are all empty with an MPI_Allreduce, MPI_SUM
     int secondary = otherQueue->size();
     MPI_Allreduce(&secondary, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    //std::cout<<"global_done = "<<global_done<<"\n";
     global_done = !global_done;
+    
     //switch secondary and primary queues
     std::swap(currQueue,otherQueue);
   }
@@ -1078,7 +1094,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
     if(n_unlabeled > 0) propProc = procid;
     int global_propProc = -1;
     MPI_Allreduce(&propProc, &global_propProc, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    std::cout<<"Rank "<<procid<<" global_propProc = "<<global_propProc<<"\n";
+    //std::cout<<"Rank "<<procid<<" global_propProc = "<<global_propProc<<"\n";
     //the selected process propagates from any unlabeled vertex, creating a frontier as it goes.
     std::queue<uint64_t> frontier;
     std::set<uint64_t> verts_in_frontier;
@@ -1102,7 +1118,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
         if(labels[currVert] == 0){
           labels[currVert] = currLabel;
           std::pair<uint64_t, uint64_t> edge = auxVertToEdge[currVert];
-          std::cout<<"Rank "<<procid<<" labeled {"<<edge.first<<", "<<edge.second<<"} with label "<<currLabel<<"\n";
+          //std::cout<<"Rank "<<procid<<" labeled {"<<edge.first<<", "<<edge.second<<"} with label "<<currLabel<<"\n";
         }
         if(currVert < aux_g->n_local){ //we don't have adjacency info for ghosted verts
           int out_degree = out_degree(aux_g, currVert);
@@ -1115,7 +1131,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
             }
           }
         }
-	std::cout<<"Rank "<<procid<<" frontier.size() = "<<frontier.size()<<"\n";
+	//std::cout<<"Rank "<<procid<<" frontier.size() = "<<frontier.size()<<"\n";
       }
       //once the frontier is empty, communicate to all processes using the aux_communicate function
       //std::cout<<"Rank "<<procid<<" is starting communication\n";
@@ -1124,7 +1140,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
       global_done = 0;
       //std::cout<<"Rank "<<procid<<" starting communication\n";
       MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-      std::cout<<"Rank "<<procid<<" number of vertices in the frontier "<<global_done<<"\n";
+      //std::cout<<"Rank "<<procid<<" number of vertices in the frontier "<<global_done<<"\n";
       //if all frontiers are empty after communicating, this propagation is finished
       global_done = !global_done;
     }
@@ -1134,7 +1150,7 @@ void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, u
       if(labels[i] == 0) n_unlabeled++;
     }
     MPI_Allreduce(&n_unlabeled, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    std::cout<<"number of unlabeled vertices left in the global graph "<<global_done<<"\n";
+    //std::cout<<"number of unlabeled vertices left in the global graph "<<global_done<<"\n";
     //if there are no unlabeled vertices anywhere, the entire process is done.
     global_done = !global_done;
   }
@@ -1462,7 +1478,23 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     elt = timer();
     printf("Doing BCC-Color BFS stage\n");
   }
-
+  for(uint64_t i = 0; i < g->m; i++){
+    if(get_value(g->edge_map,i) != NULL_KEY){
+      uint64_t curr_vtx = 0;
+      for(uint64_t x = 0; x < g->n_local; x++){
+        if(g->out_degree_list[x] <= get_value(g->edge_map,i) && g->out_degree_list[x+1] > get_value(g->edge_map,i)){
+	  curr_vtx = i;
+	}
+      }
+      std::cout<<"Task "<<procid<<": Global edge ID "<<i<<" associated with edge "<<g->local_unmap[curr_vtx];
+      if(g->out_edges[get_value(g->edge_map, i)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,i)]];
+      else std::cout<<" "<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,i)]-g->n_local];
+      std::cout<<"\n";
+    } else {
+      MPI_Barrier(MPI_COMM_WORLD);
+    }
+  }
+  exit(0);
   /*for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
@@ -1499,11 +1531,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     printf("vertex %d, parent: %d, level: %d, is_leaf: %d\n",g->ghost_unmap[i], parents[curr], levels[curr],is_leaf[curr]);
   }*/
   
-  if (verbose) {
+  if (verbose && procid == 0) {
     elt = timer() - elt;
     printf("\tDone: %9.6lf\n", elt);
     elt = timer();
-    printf("Doing BCC-LCA stage\n");
+    printf("Calculating descendants\n");
   }
 
   
@@ -1511,7 +1543,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //1. calculate descendants for each owned vertex, counting itself as its own descendant
   uint64_t* n_desc = new uint64_t[g->n_total];
   calculate_descendants(g,comm,q,parents,n_desc);
-  std::cout<<"Finished calculating descendants\n";
+  //std::cout<<"Finished calculating descendants\n";
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (verbose && procid == 0) {
+    elt = timer() - elt;
+    printf("\tDone: %9.6lf\n", elt);
+    elt = timer();
+    printf("calculating preorder\n");
+  }
   /*for(int i = 0; i < g->n_local; i++){
     printf("Rank %d: Vertex %d has %d descendants\n",procid,g->local_unmap[i],n_desc[i]);
   }
@@ -1528,7 +1567,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   uint64_t* preorder = new uint64_t[g->n_total];
   for(int i = 0; i < g->n_total; i++) preorder[i] = 0;
   calculate_preorder(g,comm,q,levels,parents,n_desc,preorder); 
-  std::cout<<"Finished calculating preorder labels\n";
+  //std::cout<<"Finished calculating preorder labels\n";
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (verbose && procid == 0) {
+    elt = timer() - elt;
+    printf("\tDone: %9.6lf\n", elt);
+    elt = timer();
+    printf("Calculating high low\n");
+  }
   /*for(int i = 0; i < g->n_total; i++){
     std::cout<<"vertex "<<i<<" has preorder label "<<preorder_recursive[i]<<"\n";
   }*/
@@ -1544,12 +1590,19 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(int i = g->n_local; i < g->n_total; i++){
     printf("Rank %d: Vertex %d has a preorder label of %d \n",procid,g->ghost_unmap[i-g->n_local],preorder[i]);  
   }*/
-  
+  //while(true); 
   //3. calculate high and low values for each owned vertex
   uint64_t* lows = new uint64_t[g->n_total];
   uint64_t* highs = new uint64_t[g->n_total];
   calculate_high_low(g, comm, q, highs, lows, parents, preorder);
-  std::cout<<"Finished high low calculation\n";
+  //std::cout<<"Finished high low calculation\n";
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (verbose && procid == 0) {
+    elt = timer() - elt;
+    printf("\tDone: %9.6lf\n", elt);
+    elt = timer();
+    printf("Creating Aux graph\n");
+  }
   /*for(int i = 0; i < g->n_local; i++){
     printf("Rank %d: Vertex %d has a high of %d and a low of %d\n",procid,g->local_unmap[i],highs[i],lows[i]);
   }
@@ -1561,7 +1614,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   std::map< std::pair<uint64_t, uint64_t> , uint64_t > edgeToAuxVert;
   std::map< uint64_t, std::pair<uint64_t, uint64_t> > auxVertToEdge;
   create_aux_graph(g,comm,q,aux_g,edgeToAuxVert,auxVertToEdge,preorder,lows,highs,n_desc,parents);
-  std::cout<<"Rank "<<procid<<"Finished creating auxiliary graph:\n";
+  //std::cout<<"Rank "<<procid<<"Finished creating auxiliary graph:\n";
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (verbose && procid == 0) {
+    elt = timer() - elt;
+    printf("\tDone: %9.6lf\n", elt);
+    elt = timer();
+    printf("Doing Aux connectivity check\n");
+  }
   
   /*for(int i = 0; i < aux_g->n_local; i++){
     std::pair<uint64_t, uint64_t> edge = auxVertToEdge[i];
@@ -1579,12 +1639,21 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     }
   }*/
   //5. flood-fill labels to determine which edges are in the same biconnected component, communicating the labels between copies of the same edge.
-  std::cout<<"aux_g->n_total = "<<aux_g->n_total<<"\n";
-  std::cout<<"aux_g->n_local = "<<aux_g->n_local<<"\n";
+  //std::cout<<"aux_g->n_total = "<<aux_g->n_total<<"\n";
+  //std::cout<<"aux_g->n_local = "<<aux_g->n_local<<"\n";
   uint64_t* labels = new uint64_t[aux_g->n_total];
   for(int i = 0; i < aux_g->n_total; i++) labels[i] = 0;
   aux_connectivity_check(aux_g, edgeToAuxVert,auxVertToEdge, labels);
-  std::cout<<"Rank "<<procid<<" finished propagating through aux graph\n";
+  
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  if (verbose && procid == 0) {
+    elt = timer() - elt;
+    printf("\tDone: %9.6lf\n", elt);
+    elt = timer();
+    printf("Doing final edge labeling\n");
+  }
+  //std::cout<<"Rank "<<procid<<" finished propagating through aux graph\n";
   /*std::cout<<"Rank "<<procid<<"OUTPUTTING AUX GRAPH ********\n";
   for(int i = 0; i < aux_g->n_local; i++){
     std::pair<uint64_t, uint64_t> edge = auxVertToEdge[i];
@@ -1594,8 +1663,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   uint64_t* bicc_labels = new uint64_t[g->m_local];
   for(int i = 0; i < g->m_local; i++) bicc_labels[i] = 0;
   finish_edge_labeling(g,aux_g,edgeToAuxVert,auxVertToEdge,preorder,parents,labels,bicc_labels);
-  std::cout<<"Rank "<<procid<< " finished final edge labeling\n";
-  std::cout<<"aux_g->n = "<<aux_g->n_total<<" aux_g->m = "<<aux_g->m<<"\n";
+  //std::cout<<"Rank "<<procid<< " finished final edge labeling\n";
+  //std::cout<<"aux_g->n = "<<aux_g->n_total<<" aux_g->m = "<<aux_g->m<<"\n";
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (verbose && procid == 0) {
+    elt = timer() - elt;
+    printf("\tDone: %9.6lf\n", elt);
+    elt = timer();
+  }
   /*std::cout<<"Rank "<<procid<<" OUTPUTTING FINAL LABELS *********\n";>
   for(int i = 0; i < g->n_local; i++){
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
@@ -1661,7 +1736,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     }*/
   }
 
-  if (verbose) {
+  if (verbose &&procid==0) {
     elt = timer() - elt;
     printf("\tDone: %9.6lf\n", elt);
     //elt = timer();
