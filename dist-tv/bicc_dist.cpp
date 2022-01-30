@@ -45,7 +45,7 @@
 
 #include <mpi.h>
 #include <omp.h>
-#include <set>
+#include <unordered_set>
 #include <map>
 #include <queue>
 #include <utility>
@@ -601,15 +601,50 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
   }*/  
 }
 
-void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_graph_t* aux_g, std::map<std::pair<uint64_t, uint64_t>, uint64_t> &edgeToAuxVert,
-                      std::map<uint64_t, std::pair<uint64_t, uint64_t> > &auxVertToEdge, uint64_t* preorder, uint64_t* lows, uint64_t* highs, uint64_t* n_desc, uint64_t* parents){
+bool edge_is_owned(dist_graph_t* g, uint64_t curr_vtx, uint64_t nbor){
+  //if the highest GID vertex in the edge is owned, then the edge is owned.
+  uint64_t curr_vtx_GID = 0;
+  bool curr_is_owned = false;
+  uint64_t nbor_GID = 0;
+  bool nbor_is_owned = false;
+  if(curr_vtx < g->n_local) {
+    curr_vtx_GID = g->local_unmap[curr_vtx];
+    curr_is_owned = true;
+  } else if( curr_vtx != NULL_KEY){
+    curr_vtx_GID = g->ghost_unmap[curr_vtx-g->n_local];
+  } else {
+    return false;
+  }
+
+  if(nbor < g->n_local) {
+    nbor_GID = g->local_unmap[nbor];
+    nbor_is_owned = true;
+  } else if (nbor != NULL_KEY){
+    nbor_GID = g->ghost_unmap[nbor-g->n_local];
+  } else {
+    return false;
+  }
   
-  uint64_t n_srcs = 0;
-  uint64_t n_dsts = 0;
-  std::cout<<"Calculating the number of edges in the aux graph\n";  
+  if((curr_is_owned && curr_GID > nbor_GID) || (nbor_is_owned && nbor_GID > curr_GID)){
+    return true;
+  }
+
+  return false;
+}
+
+void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_graph_t* aux_g, uint64_t* preorder, 
+                      uint64_t* lows, uint64_t* highs, uint64_t* n_desc, uint64_t* parents){
+  
+  uint64_t n_edges = 0;
+  std::cout<<"Calculating the number of edges in the aux graph\n";
+  uint64_t  edges_to_request = 0;
+  uint64_t* request_edgelist = new uint64_t[g->m_local*2];
+  uint32_t* procs_to_send = new uint32_t[g->m_local];
+  int32_t* sendcounts = new int32_t[nprocs];
+  for(int i = 0; i < nprocs; i++) sendcounts[i] = 0;
   //count self edges for each tree edge (maybe nontree edges are necessary as well, maybe not. We'll see).
   for(uint64_t v = 0; v < g->n_local; v++){
-    std::set<uint64_t> nbors_visited;
+    std::unordered_set<uint64_t> nbors_visited;
     for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
       uint64_t w = g->out_edges[w_idx];
       if(nbors_visited.count(w) >0) continue;
@@ -619,14 +654,16 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       else w_global = g->ghost_unmap[w-g->n_local];
       if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
         //add a self edge in srcs and dsts
-        n_srcs++;
-        n_dsts++;
+        if(edge_is_owned(g,v,w)){
+          n_edges++;
+        }
+        //n_dsts++;
       }
     }
   }
   //non self-edges
   for(uint64_t v = 0; v < g->n_local; v++){
-    std::set<uint64_t> nbors_visited;
+    std::unordered_set<uint64_t> nbors_visited;
     for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
       uint64_t w = g->out_edges[j];
       if(nbors_visited.count(w) > 0) continue;
@@ -636,44 +673,154 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       else w_global = g->ghost_unmap[w-g->n_local];
       if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
         if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
-          n_srcs += 2;
-          n_dsts += 2;
+          //add{{parents[v], v}, {parents[w], w}} as an edge
+          if( edge_is_owned(g,v,get_value(g->map, parents[v]))/*edge {parents[v], v} is owned*/){
+            n_edges++;
+          }
+          if(get_value(g->map, parents[w]) < g->n_local || w < g->n_local){
+            //if at least one is local, we have one edge guaranteed
+            if( edge_is_owned(g,get_value(g->map,parents[w]), w) /*edge {parents[w], w} is owned*/){
+              n_edges++;
+            }
+          } else {
+            //no edges are local, so we don't have the global ID for this aux endpoint.
+            //add this edge, {parents[w], w} to the list to request from the owner of w.
+            int owner = 0;
+            if(w >= g->n_local){
+              owner = g->ghost_tasks[w-g->n_local];
+            } else {
+              owner = g->ghost_tasks[get_value(g->map, parents[w])-g->n_local];
+            }
+            procs_to_send[edges_to_request/2] = owner;
+            request_edgelist[edges_to_request++] = w_global;
+            request_edgelist[edges_to_request++] = parents[w];
+            sendcounts[owner] += 3;
+          }
           //add {{parents[v], v}, {parents[w], w}} (undirected edges)
         }
       } else{
         if(parents[w] == g->local_unmap[v]){
           if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
             //add {{parents[v], v} , {v, w}} as an edge
-            n_srcs += 2;
-            n_dsts += 2;
+            if( edge_is_owned(g,v,get_value(g->map, parents[v]))/*edge {parents[v], v}*/ ){
+              n_edges++;
+            }
+            
+            if(edge_is_owned(g,v,w) /*edge {v, w} */ ){
+              n_edges++;
+            }
           }
         } else if (parents[v] == w_global){
           if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
             //add {{parents[w], w}, {w, v}} as an edge
-            n_srcs += 2;
-            n_dsts += 2;
+            if(get_value(g->map, parents[w]) < g->n_local || w < g->n_local){
+              if(edge_is_owned(g,get_value(g->map, parents[w]),w)/* edge {parents[w], w} is owned*/){
+                n_edges++;
+              }
+            } else {
+              // ask for the edge {parents[w], w}, from the owner of w.
+              int owner = 0; 
+              if(w >= g->n_local){
+                owner = g->ghost_tasks[w-g->n_local];
+              } else {
+                owner = g->ghost_tasks[get_value(g->map, parents[w])-g->n_local];
+              }
+              procs_to_send[edges_to_request/2] = owner;
+              request_edgelist[edges_to_request++] = w_global;
+              request_edgelist[edges_to_request++] = parents[w];
+              sendcounts[owner] += 3;
+            }
+
+            if(edge_is_owned(g,v,w)/* edge {w,v} is owned*/){
+              n_edges++;
+            }
           }
         }
       }
     }
   }
   
-  uint64_t** srcs = new uint64_t*[n_srcs];
-  uint64_t** dsts = new uint64_t*[n_dsts];
-  uint64_t** orig = new uint64_t*[n_srcs];
+  
+  int32_t* recvcounts = new int32_t[nprocs];
+  //communicate sendcounts
+  MPI_Alltoall(sendcounts, 1, MPI_INT32_T, recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+
+  int32_t* sdispls = new int32_t[nprocs+1];
+  int32_t* rdispls = new int32_t[nprocs+1];
+  int32_t* sdispls_cpy = new int32_t[nprocs+1];
+  sdispls[0] = 0;
+  rdispls[0] = 0;
+  sdispls_cpy[0] = 0;
+  for(int32_t i = 1; i < nprocs+1; i++){
+    sdispls[i] = sdispls[i-1] + sendcounts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcounts[i-1];
+    sdispls_cpy[i] = sdispls[i];
+  }
+  int32_t send_total = sdispls[nprocs-1] + sendcounts[nprocs-1];
+  int32_t recv_total = rdispls[nprocs-1] + recvcounts[nprocs-1];
+  uint64_t* sendbuf = new uint64_t[send_total];
+  uint64_t* recvbuf = new uint64_t[recv_total];
+  //request edges in request_edgelist, each of which are owned by procs_to_send[i/2]
+  //request_edgelist has edges_to_request edges.
+  for(int i = 0; i < edges_to_request; i+=2){
+    sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = request_edgelist[i];
+    sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = request_edgelist[i+1];
+    sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = 0;//this will be sent back with the GEI for the requested edge.
+  }
+  MPI_Alltoallv(sendbuf, sendcounts, sdispls,MPI_UINT64_T, recvbuf,recvcounts,rdispls,MPI_UINT64_T,MPI_COMM_WORLD);
+
+  for(int i = 0; i < recv_total; i+=3){
+    uint64_t vert1_g = recvbuf[i];
+    uint64_t vert2_g = recvbuf[i+1];
+    uint64_t vert1_l = get_value(g->map, vert1_g);
+    uint64_t vert2_l = get_value(g->map, vert2_g);
+    if(vert1_l < g->n_local){
+      for(int j = g->out_degree_list[vert1_l]; j < g->out_degree_list[vert1_l+1]; j++){
+        if(g->out_edges[j] == vert2_l){
+          recvbuf[i+2] = g->edge_unmap[j];
+        }
+      }
+    } else {
+      for(int j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
+        if(g->out_edges[j] == vert2_l){
+          recvbuf[i+2] = g->edge_unmap[j]
+        }
+      }
+    }
+  }
+  //send back the data
+  MPI_Alltoallv(recvbuf,recvcounts,rdispls,MPI_UINT64_t, sendbuf,sendcounts,sdispls,MPI_UINT64_T, MPI_COMM_WORLD);
+  
+  std::unordered_map<std::pair<uint64_t, uint64_t>,uint64_t> remote_global_edge_indices;
+  std::unordered_map<uint64_t, uint64_t> remote_global_edge_owners;
+
+  for(int i = 0; i < nprocs; i++){
+    for(int j = sdispls[i]; j < sdispls[i+1]; j++){
+      uint64_t vert1_g = sendbuf[j];
+      uint64_t vert2_g = sendbuf[j+1];
+      uint64_t global_edge_index = sendbuf[j+2];
+      remote_global_edge_indices[std::make_pair(vert1_g,vert2_g)] = global_edge_index;
+      remote_global_edge_indices[std::make_pair(vert2_g,vert1_g)] = global_edge_index;
+      remote_global_edge_owners[global_edge_index] = i;
+    }
+  }
+
+  uint64_t* srcs = new uint64_t[n_srcs*2];
+  //uint64_t* dsts = new uint64_t*[n_dsts];
+  //uint64_t** orig = new uint64_t*[n_srcs];
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
-  for(uint64_t i = 0; i < n_srcs; i++){
-    srcs[i] = new uint64_t[2];
-    dsts[i] = new uint64_t[2];
-    orig[i] = new uint64_t[2];
+  for(uint64_t i = 0; i < n_srcs*2; i++){
+    srcs[i] = 0;
+    /*dsts[i] = new uint64_t[2];
+    orig[i] = new uint64_t[2];*/
   }
   uint64_t srcIdx = 0;
   uint64_t dstIdx = 0;
   std::cout<<"Creating srcs and dsts arrays\n";
   //self edges
   for(uint64_t v = 0; v < g->n_local; v++){
-    std::set<uint64_t> nbors_visited;
+    std::unordered_set<uint64_t> nbors_visited;
     for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
       uint64_t w = g->out_edges[w_idx];
       if(nbors_visited.count(w) >0) continue;
@@ -682,19 +829,10 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       if(w<g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
       if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
-        //add a self edge in srcs and dsts
-        orig[srcIdx][0]=v;
-        orig[srcIdx][1]=w;
-        if(g->local_unmap[v] < w_global){
-          srcs[srcIdx][0] = g->local_unmap[v];
-          srcs[srcIdx++][1] = w_global;
-          dsts[dstIdx][0] = g->local_unmap[v];
-          dsts[dstIdx++][1] = w_global;
-        } else {
-          srcs[srcIdx][0] = w_global;
-          srcs[srcIdx++][1] = g->local_unmap[v];
-          dsts[dstIdx][0] = w_global;
-          dsts[dstIdx++][1] = g->local_unmap[v];
+        //add a self edge
+        if(edge_is_owned(g,v,w)/*edge {v,w} is owned*/){
+          srcs[srcIdx++] = g->edge_unmap[w_idx];
+          srcs[srcIdx++] = g->edge_unmap[w_idx];
         }
       }
     }
@@ -703,7 +841,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
   //non-self edges
   for(uint64_t v = 0; v < g->n_local; v++){
-    std::set<uint64_t> nbors_visited;
+    std::unordered_set<uint64_t> nbors_visited;
     for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
       uint64_t w = g->out_edges[j];//w is local, not preorder
       if(nbors_visited.count(w) > 0) continue;
@@ -714,140 +852,116 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
         if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
           //add {{parents[v], v}, {parents[w], w}} (undirected edges)
-	  //std::cout<<"Rank "<<procid<<" adding {"<<parents[v]<<","<<g->local_unmap[v]<<"} -- {"<<parents[w]<<","<<w_global<<"} as an edge\n";
-          orig[srcIdx][0] = v;
-          orig[srcIdx][1] = w;
-          if(parents[v] < g->local_unmap[v]){
-            srcs[srcIdx][0] = parents[v];
-            srcs[srcIdx++][1] = g->local_unmap[v];
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-          } else {
-            srcs[srcIdx][0] = g->local_unmap[v];
-            srcs[srcIdx++][1] =  parents[v];
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+          uint64_t w_parent_lid = get_value(g->map,parents[w]);
+          uint64_t edge_GID_1 = 0;
+          uint64_t edge_GID_2 = 0;
+          for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+            if(g->out_edges[e] == get_value(g->map,parents[v])){
+              edge_GID_1 = g->edge_unmap[e];
+              break;
+            }
           }
-          if(parents[w] < w_global){
-            dsts[dstIdx][0] = parents[w];
-            dsts[dstIdx++][1] = w_global;
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            //add {{parents[v], v}, {parents[w], w}}
+          if(get_value(g->map, parents[w]) < g->n_local){
+            for(int e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
+              if(g->out_edges[e] == w) {
+                edge_GID_2 = g->edge_unmap[e];
+                break;
+              }
+            }
+          } else if(w < g->n_local && w_parent_lid != NULL_KEY){
+            for(int e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
+              if(g->out_edges[e] == w_parent_lid){
+                edge_GID_2 = g->edge_unmap[e];
+                break;
+              }
+            }
           } else {
-            dsts[dstIdx][0] = w_global;
-            dsts[dstIdx++][1] = parents[w];
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            std::pair<uint64_t, uint64_t> edge = std::make_pair(parents[w],w_global);
+            edge_GID_2 = remote_global_edge_indices.at(edge);
           }
-          orig[srcIdx][0] = v;
-          orig[srcIdx][1] = w;
-          //add {parents[w], w} as a src and {parents[v], v} as a dst
-          if(parents[v] < g->local_unmap[v]){
-            dsts[dstIdx][0] = parents[v];
-            dsts[dstIdx++][1] = g->local_unmap[v];
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-          } else {
-            dsts[dstIdx][0] = g->local_unmap[v];
-            dsts[dstIdx++][1] =  parents[v];
-            //std::cout<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+          if(edge_is_owned(g,get_value(g->map,parents[v]),v)/* edge {parents[v], v} is owned*/){
+
+            //add edge, because this one is owned
+            srcs[srcIdx++] = edge_GID_1;
+            srcs[srcIdx++] = edge_GID_2;
           }
-          if(parents[w] < w_global){
-            srcs[srcIdx][0] = parents[w];
-            srcs[srcIdx++][1] = w_global;
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-          } else {
-            srcs[srcIdx][0] = w_global;
-            srcs[srcIdx++][1] = parents[w];
-            //std::cout<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+          if(w_parent_lid < g->n_local || w < g->n_local){
+            if(edge_is_owned(g,w_parent_lid, w)/* edge {parents[w], w} is owned*/){
+              srcs[srcIdx++] = edge_GID_2;
+              srcs[srcIdx++] = edge_GID_1;
+            }
           }
         }
       } else{
         if(parents[w] == g->local_unmap[v]){
           if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
             //add {{parents[v], v} , {v, w}} as an edge
-            orig[srcIdx][0] = v;
-            orig[srcIdx][1] = w;
-            //std::cout<<"Rank "<<procid<<" adding {"<<parents[v]<<","<<g->local_unmap[v]<<"} -- {"<< g->local_unmap[v]<<","<<w_global<<"} as an edge\n";
-            if(parents[v] < g->local_unmap[v]){
-              srcs[srcIdx][0] = parents[v];
-              srcs[srcIdx++][1] = g->local_unmap[v];
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-            } else {
-              srcs[srcIdx][0] = g->local_unmap[v];
-              srcs[srcIdx++][1] = parents[v];
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            uint64_t v_parent_lid = get_value(g->map, parents[v]);
+            uint64_t edge_GID_1 = 0;
+            uint64_t edge_GID_2 = 0;
+            for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+              if(g->out_edges[e] == v_parent_lid){
+                edge_GID_1 = g->edge_unmap[e];
+              }
+              if(g->out_edges[e] == w){
+                edge_GID_2 = g->edge_unmap[e];
+              }
             }
-            if(g->local_unmap[v] < w_global){
-              dsts[dstIdx][0] = g->local_unmap[v];
-              dsts[dstIdx++][1]=w_global;
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-            } else {
-              dsts[dstIdx][0] = w_global;
-              dsts[dstIdx++][1] = g->local_unmap[v];
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+            if(edge_is_owned(g,v,v_parent_lid)/*{parents[v], v} is owned*/){
+              
+              //add {{parents[v], v}, {v,w}}
+              srcs[srcIdx++] = edge_GID_1;
+              srcs[srcIdx++] = edge_GID_2;
             }
-            orig[srcIdx][0] = v;
-            orig[srcIdx][1] = w;
-            //add {v, w} as a src and {parents[v], v} as a dst
-            if(parents[v] < g->local_unmap[v]){
-              dsts[dstIdx][0] = parents[v];
-              dsts[dstIdx++][1] = g->local_unmap[v];
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-            } else {
-              dsts[dstIdx][0] = g->local_unmap[v];
-              dsts[dstIdx++][1] = parents[v];
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-            }
-            if(g->local_unmap[v] < w_global){
-              srcs[srcIdx][0] = g->local_unmap[v];
-              srcs[srcIdx++][1]=w_global;
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-            } else {
-              srcs[srcIdx][0] = w_global;
-              srcs[srcIdx++][1] = g->local_unmap[v];
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            if(edge_is_owned(g,v,w)/* {v, w} is owned*/){
+              //add {{v,w}, {parents[v], v}}
+              srcs[srcIdx++] = edge_GID_2;
+              srcs[srcIdx++] = edge_GID_1;
             }
           }
         } else if (parents[v] == w_global){
           if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
             //add {{parents[w], w}, {w, v}} as an edge
-            //std::cout<<"Rank "<<procid<<" adding {"<<parents[w]<<","<<w_global<<"} -- {"<< w_global <<","<<g->local_unmap[v]<<"} as an edge\n";
-            orig[srcIdx][0] = v;
-            orig[srcIdx][1] = w;
-            if(parents[w] < w_global){
-              srcs[srcIdx][0] = parents[w];
-              srcs[srcIdx++][1] = w_global;
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+            uint64_t w_parent_lid = get_value(g->map, parents[w]);
+            uint64_t edge_GID_1 = 0;
+            uint64_t edge_GID_2 = 0;
+            if(w_parent_lid < g->n_local){
+              for(int e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
+                if(g->out_edges[e] == w){
+                  edge_GID_1 = g->edge_unmap[e];
+                  break;
+                }
+              }
+            } else if (w < g->n_local){
+              for(int e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
+                if(g->out_edges[e] == w_parent_lid){
+                  edge_GID_1 = g->edge_unmap[e];
+                  break;
+                }
+              }
             } else {
-              srcs[srcIdx][0] = w_global;
-              srcs[srcIdx++][1] = parents[w];
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+              std::pair<uint64_t, uint64_t> edge = std::make_pair(parents[w], w_global);
+              edge_GID_2 = remote_global_edge_indices.at(edge);
             }
-            if(g->local_unmap[v] < w_global){
-              dsts[dstIdx][0] = g->local_unmap[v];
-              dsts[dstIdx++][1]=w_global;
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-            } else {
-              dsts[dstIdx][0] = w_global;
-              dsts[dstIdx++][1] = g->local_unmap[v];
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+
+            for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+              if(g->out_edges[e] == w){
+                edge_GID_2 = g->edge_unmap[e];
+                break;
+              }
             }
-            orig[srcIdx][0] = v;
-            orig[srcIdx][1] = w;
-            //add {v, w} as a src and {parents[v], v} as a dst
-            if(parents[w] < w_global){
-              dsts[dstIdx][0] = parents[w];
-              dsts[dstIdx++][1] = w_global;
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
-            } else {
-              dsts[dstIdx][0] = w_global;
-              dsts[dstIdx++][1] = parents[w];
-              //std::cout<<"Rank "<<procid<<"added to dsts[dstIdx][0] = "<<dsts[dstIdx - 1][0]<<" dsts[dstIdx][1] = "<<dsts[dstIdx-1][1]<<"\n";
+
+            if(edge_is_owned(g,w_parent_lid, w)/*{parents[w], w} is owned*/){
+              //add {{parents[w], w}, {w, v}}
+              srcs[srcIdx++] = edge_GID_1;
+              srcs[srcIdx++] = edge_GID_2;
             }
-            if(g->local_unmap[v] < w_global){
-              srcs[srcIdx][0] = g->local_unmap[v];
-              srcs[srcIdx++][1]=w_global;
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
-            } else {
-              srcs[srcIdx][0] = w_global;
-              srcs[srcIdx++][1] = g->local_unmap[v];
-              //std::cout<<"Rank "<<procid<<"added to srcs[srcIdx][0] = "<<srcs[srcIdx - 1][0]<<" srcs[srcIdx][1] = "<<srcs[srcIdx-1][1]<<"\n";
+
+            if(edge_is_owned(g,w,v)/*{w, v} is owned*/){
+              //add {{w, v}, {parents[w], w}}
+              srcs[srcIdx++] = edge_GID_2;
+              srcs[srcIdx++] = edge_GID_1;
             }
           }
         }
@@ -1478,23 +1592,26 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     elt = timer();
     printf("Doing BCC-Color BFS stage\n");
   }
+
+  uint64_t* srcs = new uint64_t[g->m_local];
+  for(int i = 0; i < g->n_local; i++){
+    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      srcs[j] = i;
+    }
+  }
   for(uint64_t i = 0; i < g->m; i++){
     if(get_value(g->edge_map,i) != NULL_KEY){
-      uint64_t curr_vtx = 0;
-      for(uint64_t x = 0; x < g->n_local; x++){
-        if(g->out_degree_list[x] <= get_value(g->edge_map,i) && g->out_degree_list[x+1] > get_value(g->edge_map,i)){
-	  curr_vtx = i;
-	}
-      }
-      std::cout<<"Task "<<procid<<": Global edge ID "<<i<<" associated with edge "<<g->local_unmap[curr_vtx];
-      if(g->out_edges[get_value(g->edge_map, i)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,i)]];
-      else std::cout<<" "<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,i)]-g->n_local];
+      uint64_t local_edge_index = get_value(g->edge_map, i);
+      std::cout<<"Task "<<procid<<": Global edge ID "<<i<<" associated with edge "<<g->local_unmap[srcs[local_edge_index]];
+      if(g->out_edges[get_value(g->edge_map, i)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[local_edge_index]];
+      else std::cout<<" "<<g->ghost_unmap[g->out_edges[local_edge_index]-g->n_local];
       std::cout<<"\n";
     } else {
       MPI_Barrier(MPI_COMM_WORLD);
     }
   }
-  exit(0);
+  
+  while(true) MPI_Barrier(MPI_COMM_WORLD);
   /*for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
@@ -1611,9 +1728,9 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }*/
   //4. create auxiliary graph.
   dist_graph_t* aux_g = new dist_graph_t;
-  std::map< std::pair<uint64_t, uint64_t> , uint64_t > edgeToAuxVert;
-  std::map< uint64_t, std::pair<uint64_t, uint64_t> > auxVertToEdge;
-  create_aux_graph(g,comm,q,aux_g,edgeToAuxVert,auxVertToEdge,preorder,lows,highs,n_desc,parents);
+  //std::map< std::pair<uint64_t, uint64_t> , uint64_t > edgeToAuxVert;
+  //std::map< uint64_t, std::pair<uint64_t, uint64_t> > auxVertToEdge;
+  create_aux_graph(g,comm,q,aux_g,preorder,lows,highs,n_desc,parents);
   //std::cout<<"Rank "<<procid<<"Finished creating auxiliary graph:\n";
   MPI_Barrier(MPI_COMM_WORLD);
   if (verbose && procid == 0) {

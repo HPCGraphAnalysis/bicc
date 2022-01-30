@@ -109,7 +109,9 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
     init_map(g->edge_map, g->m_local*2);
     for(uint64_t i = 0; i < g->m_local; i++){
       std::cout<<"setting global edge index "<<edge_unmap[i]<<" to local index "<<i<<"\n";
-      set_value(g->edge_map, edge_unmap[i],i);
+      if(get_value(g->edge_map, edge_unmap[i]) == NULL_KEY){
+        set_value(g->edge_map, edge_unmap[i],i);
+      }
     }
   }
 
