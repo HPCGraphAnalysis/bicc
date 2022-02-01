@@ -89,8 +89,10 @@ struct dist_graph_t {
 
   uint64_t* local_unmap;
   uint64_t* ghost_unmap;
+  uint64_t* edge_unmap;
   uint64_t* ghost_tasks;
   fast_map* map;
+  fast_map* edge_map;
 } ;
 #define out_degree(g, n) (g->out_degree_list[n+1] - g->out_degree_list[n])
 #define out_vertices(g, n) &g->out_edges[g->out_degree_list[n]]

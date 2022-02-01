@@ -67,6 +67,7 @@ struct graph_gen_data_t {
   uint64_t m_local_edges;
 
   uint64_t *gen_edges;
+  uint64_t *global_edge_indices;
 };
 
 int create_graph(graph_gen_data_t *ggi, dist_graph_t *g);
