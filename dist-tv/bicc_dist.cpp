@@ -46,7 +46,7 @@
 #include <mpi.h>
 #include <omp.h>
 #include <unordered_set>
-#include <map>
+#include <unordered_map>
 #include <queue>
 #include <utility>
 #include <math.h>
@@ -56,12 +56,21 @@
 #include <cstring>
 #include <sys/time.h>
 #include <time.h>
-#include<iostream>
+#include <iostream>
 #include "bicc_dist.h"
 
 #include "comms.h"
 #include "dist_graph.h"
 #include "bfs.h"
+#include "reduce_graph.h"
+
+
+struct pair_hash{
+  std::size_t operator()(const std::pair<uint64_t, uint64_t>& k) const {
+    return std::hash<uint64_t>()(k.first) ^ (std::hash<uint64_t>()(k.second)<<1);
+  }
+};
+
 
 int procid, nprocs;
 int seed;
@@ -270,7 +279,7 @@ extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_d
       int children_computed = 0;
       uint64_t n_desc = 0;
       uint64_t* outs = out_vertices(g, currVert);
-      std::set<uint64_t> visited_nbors;
+      std::unordered_set<uint64_t> visited_nbors;
       for(int i = 0; i < out_degree; i++){
         uint64_t nbor_local = outs[i];
 	if(visited_nbors.count(nbor_local) > 0) continue;
@@ -385,7 +394,7 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       int out_degree = out_degree(g,currVert);
       uint64_t* outs = out_vertices(g,currVert);
       uint64_t child_label = preorder[currVert]+1;
-      std::set<uint64_t> visited_nbors;
+      std::unordered_set<uint64_t> visited_nbors;
       for(int nbor = 0; nbor < out_degree; nbor++){
         uint64_t nborVert = outs[nbor];
 	if(visited_nbors.count(nborVert) > 0) continue;
@@ -460,7 +469,7 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
   std::queue<uint64_t> secondary_frontier;
   std::queue<uint64_t>* currQueue = &primary_frontier;
   std::queue<uint64_t>* otherQueue = &secondary_frontier;
-  std::set<uint64_t> verts_in_queue; 
+  std::unordered_set<uint64_t> verts_in_queue; 
   //put all owned leaves on a frontier
   for(int i = 0; i < g->n_local; i++){
     primary_frontier.push(i);
@@ -485,7 +494,7 @@ void calculate_high_low(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
       
       int out_degree = out_degree(g,currVert);
       uint64_t* outs = out_vertices(g,currVert);
-      std::set<uint64_t> nbors_visited;
+      std::unordered_set<uint64_t> nbors_visited;
       //std::cout<<"visiting neighbors\n";
       for(int nborIdx = 0; nborIdx < out_degree; nborIdx++){
         uint64_t local_nbor = outs[nborIdx];
@@ -625,7 +634,7 @@ bool edge_is_owned(dist_graph_t* g, uint64_t curr_vtx, uint64_t nbor){
     return false;
   }
   
-  if((curr_is_owned && curr_GID > nbor_GID) || (nbor_is_owned && nbor_GID > curr_GID)){
+  if((curr_is_owned && curr_vtx_GID > nbor_GID) || (nbor_is_owned && nbor_GID > curr_vtx_GID)){
     return true;
   }
 
@@ -783,15 +792,15 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     } else {
       for(int j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
         if(g->out_edges[j] == vert2_l){
-          recvbuf[i+2] = g->edge_unmap[j]
+          recvbuf[i+2] = g->edge_unmap[j];
         }
       }
     }
   }
   //send back the data
-  MPI_Alltoallv(recvbuf,recvcounts,rdispls,MPI_UINT64_t, sendbuf,sendcounts,sdispls,MPI_UINT64_T, MPI_COMM_WORLD);
+  MPI_Alltoallv(recvbuf,recvcounts,rdispls,MPI_UINT64_T, sendbuf,sendcounts,sdispls,MPI_UINT64_T, MPI_COMM_WORLD);
   
-  std::unordered_map<std::pair<uint64_t, uint64_t>,uint64_t> remote_global_edge_indices;
+  std::unordered_map<std::pair<uint64_t, uint64_t>,uint64_t,pair_hash> remote_global_edge_indices;
   std::unordered_map<uint64_t, uint64_t> remote_global_edge_owners;
 
   for(int i = 0; i < nprocs; i++){
@@ -805,10 +814,10 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     }
   }
 
-  uint64_t* srcs = new uint64_t[n_srcs*2];
+  uint64_t* srcs = new uint64_t[n_edges*2];
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
-  for(uint64_t i = 0; i < n_srcs*2; i++){
+  for(uint64_t i = 0; i < n_edges*2; i++){
     srcs[i] = 0;
   }
   uint64_t srcIdx = 0;
@@ -893,7 +902,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
             if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
             if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
           } else {
-            remote_global_edge_owners[edge_GID_1] = g->ghost_tasks[get_value(parents[v])-g->n_local];
+            remote_global_edge_owners[edge_GID_1] = g->ghost_tasks[get_value(g->map,parents[v])-g->n_local];
           }
           if(w_parent_lid < g->n_local || w < g->n_local){
             if(edge_is_owned(g,w_parent_lid, w)/* edge {parents[w], w} is owned*/){
@@ -1011,7 +1020,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   std::cout<<"Finished populating srcs and dsts arrays:\n";
   graph_gen_data_t* ggi = new graph_gen_data_t;
   //need to calculate ggi->n, ggi->n_local, ggi->m, ggi->m_local_edges
-  for(int i =0; i < g->n_local){
+  for(int i =0; i < g->n_local; i++){
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       uint64_t nbor = g->out_edges[j];
       if(nbor < g->n_local){
@@ -1041,494 +1050,72 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   } 
 }
 
-void aux_graph_comm(dist_graph_t* aux_g, std::map< std::pair<uint64_t, uint64_t>, uint64_t > edgeToAuxVert, std::map< uint64_t, std::pair<uint64_t, uint64_t> > auxVertToEdge,
-                    uint64_t* labels, std::queue<uint64_t>& frontier){
-  
-  int* sendcnts = new int[nprocs];
-  for(int i = 0; i < nprocs; i++){
-    sendcnts[i] = 0;
-  }
-  
-  for(int i = aux_g->n_local; i < aux_g->n_total; i++){
-    sendcnts[aux_g->ghost_tasks[i-aux_g->n_local]] += 3; //one for each endpoint, one for a label
-  }
 
-  int* recvcnts = new int[nprocs];
-  for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
-  int status = MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
-  
-  int* sdispls = new int[nprocs];
-  int* rdispls = new int[nprocs];
-  sdispls[0] = 0;
-  rdispls[0] = 0;
-  for(int i = 1; i < nprocs; i++){
-    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
-    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
-  }
-  
-  int sendsize = 0;
-  int recvsize = 0;
-  int* sentcount = new int[nprocs];
-  for(int i = 0; i < nprocs; i++){
-    sendsize += sendcnts[i];
-    recvsize += recvcnts[i];
-    sentcount[i] = 0;
-  }
-  
-  int* sendbuf = new int[sendsize];
-  int* recvbuf = new int[recvsize];
-  
-  //go through all the ghosted vertices, send their GIDs to the owning processor
-  for(int i = aux_g->n_local; i < aux_g->n_total; i++){
-    int proc_to_send = aux_g->ghost_tasks[i-aux_g->n_local];
-    int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
-    sentcount[proc_to_send] += 3;
-    std::pair<uint64_t, uint64_t> globalEdge = auxVertToEdge[i];
-    sendbuf[sendbufidx++] = globalEdge.first;
-    sendbuf[sendbufidx++] = globalEdge.second;
-    sendbuf[sendbufidx++] = labels[i];
-    //std::cout<<"Rank "<<procid<<" sending {"<<globalEdge.first<<","<<globalEdge.second<<"} to rank "<<proc_to_send<<" with label "<<labels[i]<<"\n";
-  }
 
-  status = MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
-  
-  for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 3){
-    std::pair<uint64_t, uint64_t> edge = std::make_pair(recvbuf[exchangeIdx], recvbuf[exchangeIdx+1]);
-    //std::cout<<"Rank "<<procid<<" received {"<<recvbuf[exchangeIdx]<<","<<recvbuf[exchangeIdx+1]<<"} with label "<<recvbuf[exchangeIdx+2]<<"\n";
-    if(edgeToAuxVert.find(edge) != edgeToAuxVert.end()){
-      uint64_t vert = edgeToAuxVert[edge];
-      uint64_t owned_label = labels[vert];
-      uint64_t recvd_label = recvbuf[exchangeIdx+2];
-      if(recvd_label != 0 && owned_label == 0 && vert < aux_g->n_local){
-        //std::cout<<"Rank "<<procid<<" pushing {"<<edge.first<<","<<edge.second<<"} with label "<<recvd_label<<"\n";
-        frontier.push(vert);
-      } else if (recvd_label == 0){
-        recvbuf[exchangeIdx + 2] = owned_label;
-      } else if (recvd_label != owned_label){
-        std::cout<<"a received label doesn't match the owned label, this should not happen\n";
-      }
-    }
-  }
-
-  status = MPI_Alltoallv(recvbuf, recvcnts, rdispls, MPI_INT, sendbuf, sendcnts, sdispls, MPI_INT, MPI_COMM_WORLD);
-  //this is back where the verts are ghosted, should not attempt to add to frontier.
-  for(int updateIdx = 0; updateIdx < sendsize; updateIdx += 3){
-    std::pair<uint64_t, uint64_t> edge = std::make_pair(sendbuf[updateIdx], sendbuf[updateIdx+1]);
-    uint64_t vert = edgeToAuxVert[edge];
-    uint64_t owned_label = labels[vert];
-    uint64_t recvd_label = sendbuf[updateIdx +2];
-    if(owned_label == 0){
-      labels[vert] = recvd_label;
-      //std::cout<<"Rank "<<procid<<" setting {"<<edge.first<<","<<edge.second<<"} to have label "<<recvd_label<<"\n";
-    } else if (recvd_label != 0 && owned_label != recvd_label){
-      std::cout<<"owned and received labels mismatch, this should not happen\n";
-    }
-  }
-  delete [] sendcnts;
-  delete [] recvcnts;
-  delete [] sdispls;
-  delete [] rdispls;
-  delete [] sentcount;
-  delete [] sendbuf;
-  delete [] recvbuf;
-}
-
-void aux_connectivity_check(dist_graph_t* aux_g, std::map< std::pair<uint64_t, uint64_t>, uint64_t> edgeToAuxVert, std::map<uint64_t, std::pair<uint64_t, uint64_t> > auxVertToEdge, uint64_t* labels){
-  
-  //initialize all the labels to zero
-  for(int i = 0; i < aux_g->n_total; i++){
-    labels[i] = 0;
-  }
-  
-  //loop until there are no unlabeled vertices anywhere
-  int local_done = 0;
-  int global_done = 0;
-  int round = 1;
-  while(!global_done){ 
-    //collectively determine which process will start the propagation
-    int n_unlabeled = 0;
-    for(int i = 0; i < aux_g->n_local; i++){
-      if(labels[i] == 0) n_unlabeled++;
-    }
-    //std::cout<<"Rank "<<procid<<" #unlabeled = "<<n_unlabeled<<"\n"; 
-    int propProc = -1;
-    if(n_unlabeled > 0) propProc = procid;
-    int global_propProc = -1;
-    MPI_Allreduce(&propProc, &global_propProc, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    //std::cout<<"Rank "<<procid<<" global_propProc = "<<global_propProc<<"\n";
-    //the selected process propagates from any unlabeled vertex, creating a frontier as it goes.
-    std::queue<uint64_t> frontier;
-    std::set<uint64_t> verts_in_frontier;
-    if(global_propProc == procid){
-      for(int i = 0; i < aux_g->n_local; i++){
-        if(labels[i] == 0){
-          frontier.push(i);
-	  verts_in_frontier.insert(i);
-          break;
-        }
-      }
-    }
-    uint64_t currLabel = global_propProc + nprocs*round;
-  //isn't   //while this propagation is not finished, do local work
-    
-    while(!global_done){
-      while(frontier.size() > 0){
-        uint64_t currVert = frontier.front();
-        frontier.pop();
-	verts_in_frontier.erase(currVert);
-        if(labels[currVert] == 0){
-          labels[currVert] = currLabel;
-          std::pair<uint64_t, uint64_t> edge = auxVertToEdge[currVert];
-          //std::cout<<"Rank "<<procid<<" labeled {"<<edge.first<<", "<<edge.second<<"} with label "<<currLabel<<"\n";
-        }
-        if(currVert < aux_g->n_local){ //we don't have adjacency info for ghosted verts
-          int out_degree = out_degree(aux_g, currVert);
-          uint64_t* outs = out_vertices(aux_g, currVert);
-          for(int j = 0; j < out_degree; j++){
-            if(labels[outs[j]] == 0 && verts_in_frontier.count(outs[j]) == 0) {
-              //std::cout<<"Rank "<<procid<<" adding vertex "<<outs[j]<<" to the frontier\n";
-              frontier.push(outs[j]);
-	      verts_in_frontier.insert(outs[j]);
-            }
-          }
-        }
-	//std::cout<<"Rank "<<procid<<" frontier.size() = "<<frontier.size()<<"\n";
-      }
-      //once the frontier is empty, communicate to all processes using the aux_communicate function
-      //std::cout<<"Rank "<<procid<<" is starting communication\n";
-      aux_graph_comm(aux_g,edgeToAuxVert,auxVertToEdge,labels, frontier);
-      local_done = frontier.size();
-      global_done = 0;
-      //std::cout<<"Rank "<<procid<<" starting communication\n";
-      MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-      //std::cout<<"Rank "<<procid<<" number of vertices in the frontier "<<global_done<<"\n";
-      //if all frontiers are empty after communicating, this propagation is finished
-      global_done = !global_done;
-    }
-    round++;
-    n_unlabeled = 0;
-    for(int i = 0; i < aux_g->n_local; i++){
-      if(labels[i] == 0) n_unlabeled++;
-    }
-    MPI_Allreduce(&n_unlabeled, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    //std::cout<<"number of unlabeled vertices left in the global graph "<<global_done<<"\n";
-    //if there are no unlabeled vertices anywhere, the entire process is done.
-    global_done = !global_done;
-  }
-}
-
-void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, std::map< std::pair<uint64_t, uint64_t>, uint64_t> & edgeToAuxVert, 
-			  std::map< uint64_t, std::pair<uint64_t, uint64_t> > & auxVertToEdge, uint64_t* preorder, uint64_t* parents,
+void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g, uint64_t* preorder, uint64_t* parents,
                           uint64_t * aux_labels, uint64_t* final_labels){
-
-  int* sendcnts = new int[nprocs];
-  for(int i = 0; i < nprocs; i++) sendcnts[i] = 0;
-  //map the aux vertices to edges, and apply the corresponding aux_labels to the final edge labels.
-  for(uint64_t vert = 0; vert < g->n_local; vert++){
-    for(uint64_t nbor_idx = g->out_degree_list[vert]; nbor_idx < g->out_degree_list[vert+1]; nbor_idx++){
-      uint64_t nbor_local = g->out_edges[nbor_idx];
-      uint64_t nbor_global = 0;
-      uint64_t vert_global = g->local_unmap[vert];
-      
-      if(nbor_local < g->n_local) nbor_global = g->local_unmap[nbor_local];
-      else nbor_global = g->ghost_unmap[nbor_local - g->n_local];
-      std::pair<uint64_t, uint64_t> edge;
-      if(nbor_global < vert_global){
-        edge.first = nbor_global;
-        edge.second = vert_global;
-      } else if (vert_global < nbor_global){
-        edge.first = vert_global;
-        edge.second = nbor_global;
+  //update final_labels (vertex labels) with the edge labels from aux_labels
+  for(uint64_t i = 0; i < g->n_local; i++){
+    for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[j+1]; j++){
+      uint64_t vert1_lid = i;
+      uint64_t vert2_lid = g->out_edges[j];
+      uint64_t edge_gid = g->edge_unmap[j];
+      uint64_t edge_lid = get_value(aux_g->map, edge_gid);
+      if(final_labels[vert1_lid] > aux_labels[edge_lid]){
+        final_labels[vert1_lid] = aux_labels[edge_lid];
       }
-      //first, check to see if the global edge is in the aux graph map.
-      if(edgeToAuxVert.find(edge) != edgeToAuxVert.end()){
-        uint64_t auxVert = edgeToAuxVert[edge];
-        if(aux_labels[auxVert] != 0) final_labels[nbor_idx] = aux_labels[auxVert];
-      //for each nontree edge {v,w}
-      } else if(parents[vert] != nbor_global && parents[nbor_local] != g->local_unmap[vert]){
-        //such that preorder[v] < preorder[w]
-        if(preorder[vert] < preorder[nbor_local]){
-          //nbor_local is w
-          //if w is not ghosted, label the edge {v,w} the same as {parents[w], w} 
-          if(nbor_local < g->n_local){
-            std::pair<uint64_t, uint64_t> parent_edge;
-            if(parents[nbor_local] < nbor_global){
-              parent_edge.first = parents[nbor_local];
-              parent_edge.second = nbor_global;
-            } else {
-              parent_edge.first = nbor_global;
-              parent_edge.second = parents[nbor_local];
-            }
-            final_labels[nbor_idx] = aux_labels[edgeToAuxVert[parent_edge]];
-            //std::cout<<"Labeling edge from "<<vert_global<<" to "<<nbor_global<<" with label "<<final_labels[nbor_idx]<<"\n";
-            //need to also set the reverse edge? We consider both cases, so maybe not necessary.
-          } else {
-            //if w is ghosted, build up sendcnts to request the relevant edge label from the owning process
-            sendcnts[g->ghost_tasks[nbor_local - g->n_local]]+=3;
-
-          }
-        } else if (preorder[nbor_local] < preorder[vert]){
-          //vert is w
-          //if w is not ghosted, label the edge {v,w the same as {parents[w], w]
-          if(vert < g->n_local){
-            std::pair<uint64_t, uint64_t> parent_edge;
-            if(parents[vert] < vert_global){
-              parent_edge.first = parents[vert];
-              parent_edge.second = vert_global;
-            } else {
-              parent_edge.first = vert_global;
-              parent_edge.second = parents[vert];
-            }
-            final_labels[nbor_idx] = aux_labels[edgeToAuxVert[parent_edge]];
-            //std::cout<<"Labeling edge from "<<vert_global<<" to "<<nbor_global<<" with label "<<final_labels[nbor_idx]<<"\n";
-          } else {
-            //add to the sendcnts, not sure this can actually happen
-            sendcnts[g->ghost_tasks[vert - g->n_local]]+=3;
-          }
-        }
+      if(final_labels[vert2_lid] > aux_labels[edge_lid]){
+        final_labels[vert2_lid] = aux_labels[edge_lid];
       }
     }
   }
-  //using sendcnts, build up arrays for a collective communication
-  int* recvcnts = new int[nprocs];
-  for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
-  int status = MPI_Alltoall(sendcnts,1,MPI_INT, recvcnts,1,MPI_INT,MPI_COMM_WORLD);
-  
-  int* sdispls = new int[nprocs];
-  int* rdispls = new int[nprocs];
-  sdispls[0] = 0;
-  rdispls[0] = 0;
-  for(int i = 1; i < nprocs; i++){
-    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
-    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
-  }
 
-  int sendsize = 0;
-  int recvsize = 0;
-  int* sentcount = new int[nprocs];
-  for(int i = 0; i < nprocs; i++){
-    sendsize += sendcnts[i];
-    recvsize += recvcnts[i];
-    sentcount[i] = 0;
+  int32_t* sendcounts = new int32_t[nprocs];
+  int32_t* recvcounts = new int32_t[nprocs];
+  for(int i = 0; i < nprocs; i++)sendcounts[i] = 0;
+  for(int i = 0; i < g->n_ghost; i++){
+    sendcounts[g->ghost_tasks[i]] += 2;
   }
+  MPI_Alltoall(sendcounts, 1, MPI_INT32_T, recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
 
-  int* sendbuf = new int[sendsize];
-  int* recvbuf = new int[recvsize];
-  
-  for(uint64_t vert = 0; vert < g->n_local; vert++){
-    for(uint64_t nbor_idx = g->out_degree_list[vert]; nbor_idx < g->out_degree_list[vert+1]; nbor_idx++){
-      uint64_t nbor_local = g->out_edges[nbor_idx];
-      uint64_t nbor_global = 0;
-      uint64_t vert_global = g->local_unmap[vert];
-      
-      if(nbor_local < g->n_local) nbor_global = g->local_unmap[nbor_local];
-      else nbor_global = g->ghost_unmap[nbor_local - g->n_local];
-      std::pair<uint64_t, uint64_t> edge;
-      if(nbor_global < vert_global){
-        edge.first = nbor_global;
-        edge.second = vert_global;
-      } else if (vert_global < nbor_global){
-        edge.first = vert_global;
-        edge.second = nbor_global;
-      }
-      if(edgeToAuxVert.find(edge) == edgeToAuxVert.end() && parents[vert] != nbor_global && parents[nbor_local] != g->local_unmap[vert]){
-        if(preorder[vert] < preorder[nbor_local] && nbor_local >= g->n_local){
-          int owning_proc = g->ghost_tasks[nbor_local - g->n_local];
-          int sendbufidx = sdispls[owning_proc] + sentcount[owning_proc];
-          std::pair<uint64_t, uint64_t> parent_edge;
-          if(parents[nbor_local] < nbor_global){
-            parent_edge.first = parents[nbor_local];
-            parent_edge.second = nbor_global;
-          } else {
-            parent_edge.first = nbor_global;
-            parent_edge.second = parents[nbor_local];
-          }
-          sentcount[owning_proc] += 3;
-          sendbuf[sendbufidx++] = parent_edge.first;
-          sendbuf[sendbufidx++] = parent_edge.second;
-          sendbuf[sendbufidx++] = 0;
-        } else if (preorder[nbor_local] < preorder[vert] && vert >= g->n_local ){
-          //not sure this will actually happen
-          int owning_proc = g->ghost_tasks[vert - g->n_local];
-          int sendbufidx = sdispls[owning_proc] + sentcount[owning_proc];
-          std::pair<uint64_t, uint64_t> parent_edge;
-          if(parents[vert] < vert_global){
-            parent_edge.first = parents[vert];
-            parent_edge.second = vert_global;
-          } else {
-            parent_edge.first = vert_global;
-            parent_edge.second = parents[vert];
-          }
-          sentcount[owning_proc] += 3;
-          sendbuf[sendbufidx++] = parent_edge.first;
-          sendbuf[sendbufidx++] = parent_edge.second;
-          sendbuf[sendbufidx++] = 0;
-        } 
-      }
-    }
-  }
-  //communicate!
-  status = MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
-  //set labels to send back
-  for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 3){
-    //look up the edges in the first and second indices of the recvbuf
-    std::pair<uint64_t, uint64_t> edge_to_lookup;
-    edge_to_lookup.first = recvbuf[exchangeIdx];
-    edge_to_lookup.second = recvbuf[exchangeIdx+1];
-    uint64_t edge_label = aux_labels[edgeToAuxVert[edge_to_lookup]];
-    recvbuf[exchangeIdx+2] = edge_label;
-    //set the label in the third index of the recvbuf to be the label of the edges
-  }
-  //send the labels back and finish labeling everything.
-  status = MPI_Alltoallv(recvbuf, recvcnts, rdispls, MPI_INT, sendbuf, sendcnts, sdispls, MPI_INT, MPI_COMM_WORLD);
-
-  //for each local edge {vert, nbor} in the graph (we disregard the direction and so label both directed edges if they exist)
-  for(int vert = 0; vert < g->n_local; vert++){
-    for(int edgeIdx = g->out_degree_list[vert]; edgeIdx < g->out_degree_list[vert+1]; edgeIdx++){
-      uint64_t vert_global = g->local_unmap[vert];
-      uint64_t nbor = g->out_edges[edgeIdx];
-      uint64_t nbor_global = 0;
-      if(nbor < g->n_local){
-        nbor_global = g->local_unmap[nbor];
-      } else {
-        nbor_global = g->ghost_unmap[nbor - g->n_local];
-      }
-      //if {vert, nbor} is nontree
-      if(parents[vert] != nbor_global && parents[nbor] != vert_global){
-        //if preorder[vert] < preorder[nbor] and the local edge is not labeled
-        if(preorder[vert] < preorder[nbor] && final_labels[edgeIdx] == 0 ){
-          //look through edges received to find the relevant edge {parents[nbor], g->local_unmap[nbor]} and use its label
-          for(int updateIdx = 0; updateIdx < sendsize; updateIdx+=3){
-            std::pair<uint64_t, uint64_t> update_edge;
-            update_edge.first = sendbuf[updateIdx];
-            update_edge.second = sendbuf[updateIdx+1];
-            uint64_t update_label = sendbuf[updateIdx+2];
-            if((update_edge.first == nbor_global || update_edge.second == nbor_global) && (update_edge.first == parents[nbor] || update_edge.second == parents[nbor])){
-              final_labels[edgeIdx] = update_label;
-              //std::cout<<"Update label = "<<update_label<<"\n";
-              break; //only one edge received corresponds to the current edge
-            }
-          }
-        //else if preorder[nbor] < preorder[vert] and the local edge is not labeled
-        } else if (preorder[nbor] < preorder[vert] && final_labels[edgeIdx] == 0){ //again, not sure this will ever happen
-          //look through edges received to find the relevant edge {parents[vert], g->local_unmap[vert]} and use its label
-          for(int updateIdx = 0; updateIdx < sendsize; updateIdx +=3){
-            std::pair<uint64_t, uint64_t> update_edge;
-            update_edge.first = sendbuf[updateIdx];
-            update_edge.second = sendbuf[updateIdx+1];
-            uint64_t update_label = sendbuf[updateIdx+2];
-            if((update_edge.first == vert_global || update_edge.second == vert_global) && (update_edge.first == parents[vert] || update_edge.second == parents[vert])){
-              final_labels[edgeIdx] = update_label;
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
-  
-
-  for(int i = 0; i < nprocs; i++) sendcnts[i] = 0;
-  //there are still a few unlabeled edges possible, so if there are any unlabeled edges, send their GID pairs to the other process that owns an endpoint
-  for(int i = 0; i < g->n_local; i++){
-    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
-      uint64_t i_global = g->local_unmap[i];
-      uint64_t nbor = g->out_edges[j];
-      uint64_t nbor_global = 0;
-      if(nbor < g->n_local) nbor_global = g->local_unmap[nbor];
-      else nbor_global = g->ghost_unmap[nbor-g->n_local];
-      //if the label of this edge is zero, send the gids to the process that owns the ghosted vertex.
-      if(final_labels[j] == 0){
-        if(nbor >= g->n_local){
-          sendcnts[g->ghost_tasks[nbor - g->n_local]]+= 3;
-        } else{
-          printf("Rank %d has an unlabeled edge that is not ghosted somewhere else\n",procid);
-        }
-      }
-    }
-  }
-  for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
-  
-  status = MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+  int32_t* sdispls = new int32_t[nprocs];
+  int32_t* rdispls = new int32_t[nprocs];
+  int32_t* sdispls_cpy = new int32_t[nprocs];
 
   sdispls[0] = 0;
   rdispls[0] = 0;
-  for(int i = 1; i < nprocs; i++){
-    sdispls[i] = sdispls[i-1] + sendcnts[i-1];
-    rdispls[i] = rdispls[i-1] + recvcnts[i-1];
+  sdispls_cpy[0] = 0;
+  for(int32_t i = 1; i < nprocs; i++){
+    sdispls[i] = sdispls[i-1] + sendcounts[i-1];
+    rdispls[i] = rdispls[i-1] + recvcounts[i-1];
+    sdispls_cpy[i] = sdispls[i];
   }
   
-  sendsize = 0;
-  recvsize = 0;
-  for(int i = 0; i < nprocs; i++){
-    sendsize += sendcnts[i];
-    recvsize += recvcnts[i];
-    sentcount[i] = 0;
+  int32_t send_total = sdispls[nprocs-1] + sendcounts[nprocs-1];
+  int32_t recv_total = rdispls[nprocs-1] + recvcounts[nprocs-1];
+
+  uint64_t* sendbuf = new uint64_t[send_total];
+  uint64_t* recvbuf = new uint64_t[recv_total];
+
+  for(int i = 0; i < g->n_ghost; i++){
+    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = g->ghost_unmap[i];
+    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = 0;
+  }
+  //do a boundary exchange
+  MPI_Alltoallv(sendbuf,sendcounts, sdispls, MPI_UINT64_T, recvbuf, recvcounts, rdispls, MPI_UINT64_T, MPI_COMM_WORLD);
+
+  for(uint64_t i = 0; i< recv_total; i+=2){
+    uint64_t lid = get_value(g->map, recvbuf[i]);
+    recvbuf[i+1] = final_labels[lid];
   }
 
-  delete [] sendbuf;
-  delete [] recvbuf;
-  sendbuf = new int[sendsize];
-  recvbuf = new int[recvsize];
+  MPI_Alltoallv(recvbuf, recvcounts, rdispls, MPI_UINT64_T, sendbuf, sendcounts, sdispls, MPI_UINT64_T, MPI_COMM_WORLD);
 
-  //go through all unlabeled edges again, add their gids and 0 for their label.
-  for(int i = 0; i < g->n_local; i++){
-    for(int j= g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
-      uint64_t i_global = g->local_unmap[i];
-      uint64_t nbor = g->out_edges[j];
-      uint64_t nbor_global = 0;
-      if(nbor < g->n_local) nbor_global = g->local_unmap[nbor];
-      else nbor_global = g->ghost_unmap[nbor-g->n_local];
-      if(final_labels[j] == 0){
-        if(nbor >= g->n_local){
-          int proc_to_send = g->ghost_tasks[nbor - g->n_local];
-          int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
-          sentcount[proc_to_send] += 3;
-          sendbuf[sendbufidx++] = nbor_global; //it is owned on the other process, easier to find
-          sendbuf[sendbufidx++] = i_global;
-          sendbuf[sendbufidx++] = 0;
-        }
-      }
-    }
+  for(int i = 0; i < send_total; i+=2){
+    uint64_t ghost_lid = get_value(g->map, sendbuf[i]);
+    final_labels[ghost_lid] = sendbuf[i+1];
   }
-  status = MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
-
-  //fill in the edge labels
-  for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 3){
-    uint64_t global_owned = recvbuf[exchangeIdx];
-    uint64_t local_owned = get_value(g->map, global_owned);
-    uint64_t global_ghost = recvbuf[exchangeIdx + 1];
-    uint64_t local_ghost = get_value(g->map, global_ghost);
-    
-    //int out_degree = out_degree(g, local_owned);
-    //uint64_t* outs = out_vertices(g, local_owned);
-    for(int i = g->out_degree_list[local_owned]; i < g->out_degree_list[local_owned+1]; i++){
-      if(g->out_edges[i] == local_ghost){
-        recvbuf[exchangeIdx + 2] = final_labels[i];
-      }
-    }
-  }
-  
-  status = MPI_Alltoallv(recvbuf, recvcnts, rdispls, MPI_INT, sendbuf, sendcnts, sdispls, MPI_INT, MPI_COMM_WORLD);
-  for(int updateIdx = 0; updateIdx < sendsize; updateIdx += 3){
-    uint64_t global_ghost = sendbuf[updateIdx];
-    uint64_t local_ghost = get_value(g->map, global_ghost);
-    uint64_t global_owned = sendbuf[updateIdx+1];
-    uint64_t local_owned = get_value(g->map, global_owned);
-    
-    for(int i = g->out_degree_list[local_owned]; i < g->out_degree_list[local_owned+1]; i++){
-      if(g->out_edges[i] == local_ghost){
-        final_labels[i] = sendbuf[updateIdx+2];
-      }
-    }
-  }
-  delete [] sendcnts;
-  delete [] recvcnts;
-  delete [] sdispls;
-  delete [] rdispls;
-  delete [] sentcount;
-  delete [] sendbuf;
-  delete [] recvbuf;
+  //done
 }
 
 extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
@@ -1546,7 +1133,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       srcs[j] = i;
     }
   }
-  for(uint64_t i = 0; i < g->m; i++){
+  /*for(uint64_t i = 0; i < g->m; i++){
     if(get_value(g->edge_map,i) != NULL_KEY){
       uint64_t local_edge_index = get_value(g->edge_map, i);
       std::cout<<"Task "<<procid<<": Global edge ID "<<i<<" associated with edge "<<g->local_unmap[srcs[local_edge_index]];
@@ -1556,9 +1143,9 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     } else {
       MPI_Barrier(MPI_COMM_WORLD);
     }
-  }
+  }*/
   
-  while(true) MPI_Barrier(MPI_COMM_WORLD);
+  //while(true) MPI_Barrier(MPI_COMM_WORLD);
   /*for(int i = 0; i < g->n_local; i++){
     int out_degree = out_degree(g, i);
     uint64_t* outs = out_vertices(g, i);
@@ -1707,7 +1294,8 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //std::cout<<"aux_g->n_local = "<<aux_g->n_local<<"\n";
   uint64_t* labels = new uint64_t[aux_g->n_total];
   for(int i = 0; i < aux_g->n_total; i++) labels[i] = 0;
-  aux_connectivity_check(aux_g, edgeToAuxVert,auxVertToEdge, labels);
+  connected_components(aux_g, comm, q, NULL,labels);
+  //aux_connectivity_check(aux_g, edgeToAuxVert,auxVertToEdge, labels);
   
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -1724,9 +1312,9 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     std::cout<<"Edge {"<<edge.first<<","<<edge.second<<"} is labeled "<<labels[i]<<"\n";
   }*/
   //6. remap labels to original edges and extend the labels to include certain non-tree edges that were excluded from the auxiliary graph.
-  uint64_t* bicc_labels = new uint64_t[g->m_local];
-  for(int i = 0; i < g->m_local; i++) bicc_labels[i] = 0;
-  finish_edge_labeling(g,aux_g,edgeToAuxVert,auxVertToEdge,preorder,parents,labels,bicc_labels);
+  uint64_t* bicc_labels = new uint64_t[g->n_total];
+  for(int i = 0; i < g->n_total; i++) bicc_labels[i] = 0;
+  finish_edge_labeling(g,srcs,aux_g,preorder,parents,labels,bicc_labels);
   //std::cout<<"Rank "<<procid<< " finished final edge labeling\n";
   //std::cout<<"aux_g->n = "<<aux_g->n_total<<" aux_g->m = "<<aux_g->m<<"\n";
   MPI_Barrier(MPI_COMM_WORLD);
@@ -1750,15 +1338,9 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   uint64_t* artpts = new uint64_t[g->n_local];
   int n_artpts = 0;
   for(int i = 0; i < g->n_local; i++){
-    uint64_t bicc = 0;
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
-      if(bicc == 0){
-        bicc = bicc_labels[g->out_edges[j]];
-      } else {
-        if(bicc != bicc_labels[g->out_edges[j]]){
-          artpts[n_artpts++] = g->local_unmap[i];
-          break;
-        }
+      if(levels[i] < levels[g->out_edges[j]] && bicc_labels[i] != bicc_labels[g->out_edges[j]]){
+        artpts[n_artpts++] = g->local_unmap[i];
       }
     }
   }
