@@ -121,6 +121,7 @@ inline void clear_thread_pre(pre_thread_data_t* pret){
 
 inline void init_sendbuf_pre(mpi_data_t* comm){
   comm->sdispls_temp[0] = 0;
+  comm->total_send = 0;
   comm->total_send = comm->sendcounts_temp[0];
   for (int32_t i = 1; i < nprocs; ++i){
     comm->sdispls_temp[i] = comm->sdispls_temp[i-1] + comm->sendcounts_temp[i-1];
@@ -197,12 +198,12 @@ inline void update_pre_send(
   thread_comm_t* tc, mpi_data_t* comm,
   pre_queue_data_t* preq, uint64_t index)
 {
-  if (preq->queue_next[index+4] != 0) 
-    printf("BAD RANK %lu %lu %lu %lu %lu %lu %lu\n", 
-      preq->queue_next[index], preq->queue_next[index+1],
-      preq->queue_next[index+2], preq->queue_next[index+3],
-      preq->queue_next[index+4], preq->queue_next[index+5],
-      preq->queue_next[index+6]);
+  // if (preq->queue_next[index+4] != 0) 
+  //   printf("BAD RANK %lu %lu %lu %lu %lu %lu %lu\n", 
+  //     preq->queue_next[index], preq->queue_next[index+1],
+  //     preq->queue_next[index+2], preq->queue_next[index+3],
+  //     preq->queue_next[index+4], preq->queue_next[index+5],
+  //     preq->queue_next[index+6]);
   
   //tc->sendbuf_rank_thread[tc->thread_queue_size/7] = (int32_t)send_rank;
   tc->sendbuf_vert_thread[tc->thread_queue_size++] = preq->queue_next[index];

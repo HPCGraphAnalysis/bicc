@@ -113,10 +113,10 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
         visited[outs[j]] = true;
         uint64_t child_index = outs[j];
         if (child_index < g->n_local) {
-          add_vid_to_queue(&tq, q, child_index, subscript);
+          uint64_t child = g->local_unmap[child_index];
+          add_vid_to_queue(&tq, q, child, subscript);
         } else {
-          uint64_t child = g->ghost_unmap[child_index - g->n_local];
-          add_vid_to_send(&tq, q, child, subscript);
+          add_vid_to_send(&tq, q, child_index, subscript);
         }
         subscript++;
       }
@@ -129,11 +129,12 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
       
 #pragma omp single
 {
+  printf("Q next: %lu -- Q send: %lu\n", q->next_size, q->send_size);
   exchange_verts_bicc(g, comm, q);
 }
 
 #pragma omp for
-  for (uint64_t i = 0; i < g->n_total; ++i)
+  for (uint64_t i = 0; i < g->n_local; ++i)
     subscripts[i] = NULL_KEY;
   
   // set the subscripts after the exchange
@@ -142,13 +143,14 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     uint64_t vert = q->queue[i];
     uint64_t vert_index = get_value(g->map, vert);
     uint64_t subscript = q->queue[i+1];
+    assert(vert_index < g->n_local);
     subscripts[vert_index] = subscript;
   }     
 
-// #pragma omp for 
-//   for (uint64_t i = 0; i < g->n_total; ++i)
-//     if (subscripts[i] == NULL_KEY)
-//       printf("BVA %lu\n", i);
+#pragma omp for 
+  for (uint64_t i = 0; i < g->n_total; ++i)
+    if (subscripts[i] == NULL_KEY)
+      printf("BVA %lu\n", i);
   
   
   // next, initialize array for nexts, next_subs, ranks, counts
@@ -341,6 +343,10 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
       //printf("OLD COUNT %lu %lu\n", vert, count);
       
       // check if we're at the end
+      if (next_sub == NULL_KEY) {
+        printf("fucked %d %lu %lu %lu %lu %lu %lu %lu\n", procid,
+          vert, rank, subscript, next, next_rank, next_sub, count);
+      }
       if (counts[next_index][next_sub] == 0) {
         next = NULL_KEY;
         next_rank = NULL_KEY;

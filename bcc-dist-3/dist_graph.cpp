@@ -61,7 +61,7 @@ extern bool verbose, debug, verify, output;
 
 int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
 {  
-  if (debug) { printf("Task %d create_graph() start\n", procid); }
+  if (debug) { printf("Rank %d create_graph() start\n", procid); }
 
   double elt = 0.0;
   if (verbose) {
@@ -75,8 +75,10 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
   g->m = ggi->m * 2;
   g->m_local = ggi->m_local_edges;
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
+  g->n_ghost = 0;
+  g->n_total = 0;
   g->ghost_degrees = NULL;
-
+  
   uint64_t* out_edges = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
   uint64_t* out_degree_list = (uint64_t*)malloc((g->n_local+1)*sizeof(uint64_t));
   uint64_t* temp_counts = (uint64_t*)malloc(g->n_local*sizeof(uint64_t));
@@ -136,6 +138,9 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
     elt = omp_get_wtime() - elt;
     printf("Task %d create_graph() %9.6f (s)\n", procid, elt);
   }
+  
+  printf("Rank: %d n: %lu, m: %lu, n_local: %lu, m_local: %lu, n_ghost: %lu, n_total: %lu\n",
+    procid, g->n, g->m, g->n_local, g->m_local, g->n_ghost, g->n_total);
 
   if (debug) { printf("Task %d create_graph() success\n", procid); }
   return 0;
@@ -143,7 +148,7 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
 
 int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
 {
-  if (debug) { printf("Task %d create_graph_serial() start\n", procid); }
+  if (debug) { printf("Rank %d create_graph_serial() start\n", procid); }
   double elt = 0.0;
   if (verbose) {
     MPI_Barrier(MPI_COMM_WORLD);
@@ -154,11 +159,14 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
   g->n_local = ggi->n_local;
   g->n_offset = 0;
   g->m = ggi->m * 2;
-  g->m_local = ggi->m * 2;
+  g->m_local = ggi->m_local_read * 2;
   g->n_ghost = 0;
   g->n_total = g->n_local;
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
   g->ghost_degrees = NULL;
+  
+  printf("Rank: %d n: %lu, m: %lu, n_local: %lu, m_local: %lu, n_ghost: %lu, n_total: %lu\n",
+    procid, g->n, g->m, g->n_local, g->m_local, g->n_ghost, g->n_total);
 
   uint64_t* out_edges = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
   uint64_t* out_degree_list = (uint64_t*)malloc((g->n_local+1)*sizeof(uint64_t));
@@ -174,9 +182,10 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
     temp_counts[i] = 0;
 
 #pragma omp parallel for 
-  for (uint64_t i = 0; i < g->m_local*2; i+=2)
+  for (uint64_t i = 0; i < g->m_local; ++i) {
 #pragma omp atomic
     ++temp_counts[ggi->gen_edges[i] - g->n_offset];
+  }
 
   parallel_prefixsums(temp_counts, out_degree_list+1, g->n_local);
 
@@ -185,10 +194,16 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
     temp_counts[i] = out_degree_list[i];
 
 #pragma omp parallel for
-  for (uint64_t i = 0; i < g->m_local*2; i+=2) {
+  for (uint64_t i = 0; i < g->m_local; i+=2) {
     int64_t index = -1;
     uint64_t src = ggi->gen_edges[i];
     uint64_t dst = ggi->gen_edges[i+1];
+#pragma omp atomic capture
+  { index = temp_counts[src]; temp_counts[src]++; }
+    out_edges[index] = dst;
+    
+    dst = ggi->gen_edges[i];
+    src = ggi->gen_edges[i+1];
 #pragma omp atomic capture
   { index = temp_counts[src]; temp_counts[src]++; }
     out_edges[index] = dst;
