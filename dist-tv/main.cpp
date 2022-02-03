@@ -15,6 +15,7 @@
 
 extern int procid, nprocs;
 extern bool verbose, debug, verify;
+extern bool debug2 = true;
 
 void print_usage(char** argv)
 {

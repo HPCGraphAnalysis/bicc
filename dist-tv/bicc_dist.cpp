@@ -791,7 +791,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       }
     } else {
       for(int j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
-        if(g->out_edges[j] == vert2_l){
+        if(g->out_edges[j] == vert1_l){
           recvbuf[i+2] = g->edge_unmap[j];
         }
       }
@@ -804,17 +804,20 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   std::unordered_map<uint64_t, uint64_t> remote_global_edge_owners;
 
   for(int i = 0; i < nprocs; i++){
-    for(int j = sdispls[i]; j < sdispls[i+1]; j++){
+    for(int j = sdispls[i]; j < sdispls[i+1]; j+=3){
       uint64_t vert1_g = sendbuf[j];
       uint64_t vert2_g = sendbuf[j+1];
       uint64_t global_edge_index = sendbuf[j+2];
+      if(vert1_g == 4826 || vert1_g == 10600){
+        std::cout<<"vert1_g = "<<vert1_g<<" vert2_g = "<<vert2_g<<" global_edge_index = "<<global_edge_index<<" owner = "<<i<<"\n";
+      }
       remote_global_edge_indices[std::make_pair(vert1_g,vert2_g)] = global_edge_index;
       remote_global_edge_indices[std::make_pair(vert2_g,vert1_g)] = global_edge_index;
       remote_global_edge_owners[global_edge_index] = i;
     }
   }
 
-  uint64_t* srcs = new uint64_t[n_edges*2];
+  uint64_t* srcs = (uint64_t*)malloc(n_edges*2*sizeof(uint64_t));//new uint64_t[n_edges*2];
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
   for(uint64_t i = 0; i < n_edges*2; i++){
@@ -822,7 +825,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   }
   uint64_t srcIdx = 0;
   uint64_t max_edge_GID = 0;
-  std::cout<<"Creating srcs and dsts arrays\n";
+  std::cout<<"Creating srcs and dsts arrays, "<<n_edges<<" edges to be created\n";
   //self edges
   for(uint64_t v = 0; v < g->n_local; v++){
     std::unordered_set<uint64_t> nbors_visited;
@@ -1017,9 +1020,124 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       }
     }
   }
-  std::cout<<"Finished populating srcs and dsts arrays:\n";
-  graph_gen_data_t* ggi = new graph_gen_data_t;
+  std::cout<<"Finished populating srcs and dsts arrays:\n\t";
+  
+  /*for(int i = 0; i < srcIdx; i++){
+    std::cout<<srcs[i]<<" ";
+  }
+  std::cout<<"\n";*/
+  aux_g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
+  if((g->m_local + g->n_local)*2 < g->n) init_map_nohash(aux_g->map, g->n);
+  else init_map(aux_g->map, (g->m_local+g->n_local)*2);
+  aux_g->local_unmap = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
+  
+  uint64_t curr_lid = 0;
+  aux_g->m_local = n_edges;
+  //std::cout<<"n_edges = "<<n_edges<<" srcIdx = "<<srcIdx<<"\n";
+  aux_g->out_edges = (uint64_t*)malloc(aux_g->m_local*sizeof(uint64_t));
+  /*for(uint64_t i = 0; i < aux_g->m_local; i++){
+    std::cout<<"accessing aux_g->out_edges["<<i<<"]\n";
+    aux_g->out_edges[i] = 0;
+  }*/
+  ///std::cout<<"done with edge size test\n";
+  uint64_t* temp_counts =  (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
+//#pragma omp parallel for
+  for(uint64_t i = 0; i < g->m_local; i++) temp_counts[i] = 0;
+
+  //run through global IDs in the src position, map to global IDs, add to local_unmap, and update temp_counts
+  for(uint64_t i = 0; i < srcIdx; i+=2){
+    if(get_value(aux_g->map, srcs[i]) == NULL_KEY){
+      aux_g->local_unmap[curr_lid] = srcs[i];
+      temp_counts[curr_lid]++;
+      set_value(aux_g->map, srcs[i], curr_lid);
+      curr_lid++;
+    } else {
+      temp_counts[get_value(aux_g->map,srcs[i])]++; 
+    }
+  }
+  aux_g->n_local = curr_lid;
+  /*for(uint64_t i = 0; i < aux_g->n_local; i++){
+    std::cout<<"local "<<i<<" is global "<<aux_g->local_unmap[i]<<"\n";
+  }*/
+  aux_g->out_degree_list = (uint64_t*)malloc((aux_g->n_local+1)*sizeof(uint64_t));
+
+//#pragma omp parallel for
+  for(uint64_t i = 0; i< aux_g->n_local+1; i++) aux_g->out_degree_list[i] = 0;
+
+  for(uint64_t i = 0; i < aux_g->n_local; i++){
+    //std::cout<<"vertex "<<aux_g->local_unmap[i] <<" has degree "<<temp_counts[i]<<"\n";
+    aux_g->out_degree_list[i+1] = aux_g->out_degree_list[i] + temp_counts[i];
+  }
+
+  memcpy(temp_counts, aux_g->out_degree_list, aux_g->n_local*sizeof(uint64_t));
+  assert(aux_g->out_degree_list[aux_g->n_local] == aux_g->m_local); 
+  for(uint64_t i = 0; i < aux_g->m_local*2; i+=2){
+    uint64_t global_src = srcs[i];
+    uint64_t global_dest = srcs[i+1];
+    aux_g->out_edges[temp_counts[get_value(aux_g->map,global_src)]++] = global_dest;
+  }
+
+
+  aux_g->ghost_tasks = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
+  aux_g->ghost_unmap = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
+  for(uint64_t i = 0; i < aux_g->m_local; i++){
+    uint64_t global_dest = aux_g->out_edges[i];
+    uint64_t val = get_value(aux_g->map, global_dest);
+    if(val == NULL_KEY){
+      //std::cout<<"global_dest = "<<global_dest<<" and is a ghost\n";
+      set_value(aux_g->map, global_dest, curr_lid);
+      aux_g->ghost_unmap[curr_lid-aux_g->n_local] = global_dest;
+      
+      uint64_t local_edge_index = get_value(g->edge_map, global_dest);
+      if(local_edge_index != NULL_KEY){
+        aux_g->ghost_tasks[curr_lid-aux_g->n_local] = g->ghost_tasks[g->out_edges[local_edge_index]-g->n_local];
+      } else {
+        aux_g->ghost_tasks[curr_lid-aux_g->n_local] = remote_global_edge_owners.at(global_dest);
+      }
+
+      aux_g->out_edges[i] = curr_lid++;
+    } else {
+      aux_g->out_edges[i] = val;
+    }
+  }
+
+  /*for(uint64_t i = 0; i < aux_g->m_local*2; i+=2){
+    uint64_t global_src = srcs[i];
+    uint64_t global_dest = srcs[i+1];
+    uint64_t local_src = get_value(aux_g->map, global_src);
+    //if global_dest is not in aux_g->map, add it and place the local ID in its place in out_edges
+    if(get_value(aux_g->map, global_dest) == NULL_KEY){
+      aux_g->ghost_unmap[curr_lid - aux_g->n_local] = global_dest;
+      aux_g->out_edges[temp_counts[local_src]++] = curr_lid;
+      //set the ghost_tasks, 
+      //1. lookup which local edge corresponds to the destination (could be entirely remote, though)
+      if(get_value(g->edge_map, global_dest) != NULL_KEY){
+        uint64_t local_edge_index = get_value(g->edge_map, global_dest);
+        //the owner of the destination vertex of this edge should be ghosted (source vertices are never ghosted)
+        aux_g->ghost_tasks[curr_lid] = g->ghost_tasks[g->out_edges[local_edge_index]-g->n_local];
+      } else {
+        //2. if there is no corresponding local edge, lookup the remote owner of this edge in the map.
+        aux_g->ghost_tasks[curr_lid] = remote_global_edge_owners.at(global_dest);
+      }
+      set_value(aux_g->map, global_dest, curr_lid++);
+    } else {
+      //ghost_tasks, ghost_unmap, and map values already set, just translate global->local and place the local value in out_edges
+      aux_g->out_edges[temp_counts[local_src]++] = get_value(aux_g->map, global_dest);
+    }
+  }*/
+  aux_g->n_ghost = curr_lid - aux_g->n_local;
+  aux_g->n_total = curr_lid;
+  /*for(uint64_t i = 0; i < aux_g->n_ghost; i++){
+    std::cout<<"ghost vertex "<<i+aux_g->n_local<<" has global ID "<<aux_g->ghost_unmap[i]<<" and is owned by process "<<aux_g->ghost_tasks[i]<<"\n";
+  }*/
+  //communicate number of local, owned verts:
+  MPI_Allreduce(&aux_g->n_local,&aux_g->n,1,MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  //communicate number of local edges, add together
+  MPI_Allreduce(&aux_g->m_local,&aux_g->m,1,MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  std::cout<<"aux_g->n = "<<aux_g->n<<" aux_g->m = "<<aux_g->m<<"\n";
+  /*graph_gen_data_t* ggi = new graph_gen_data_t;
   //need to calculate ggi->n, ggi->n_local, ggi->m, ggi->m_local_edges
+  ggi->n_local = 0;
   for(int i =0; i < g->n_local; i++){
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       uint64_t nbor = g->out_edges[j];
@@ -1033,7 +1151,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       }
     }
   }
-
+  
   MPI_Allreduce(&max_edge_GID,&ggi->n,1,MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
   uint64_t m_local = srcIdx/2;
   MPI_Allreduce(&m_local,&ggi->m,1,MPI_UINT64_T,MPI_SUM, MPI_COMM_WORLD);
@@ -1041,13 +1159,18 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   ggi->gen_edges = srcs;
   ggi->global_edge_indices = NULL;
   
+  std::cout<<"Task "<<procid<<": n = "<<ggi->n<<" n_local = "<<ggi->n_local<<" m_local_edges = "<<ggi->m_local_edges<<"\n";
+
   create_graph(ggi, aux_g);
-  relabel_edges(aux_g, NULL);
+  relabel_edges(aux_g);
   
   //fix up the ghost_tasks
   for(int i = 0; i < aux_g->n_ghost; i++){
+    if(remote_global_edge_owners.find(aux_g->ghost_unmap[i]) == remote_global_edge_owners.end())
+      std::cout<<"fixing ghost tasks for ghost vertex "<<aux_g->ghost_unmap[i]<<", but it isn't in the remote owners map\n";
+      
     aux_g->ghost_tasks[i] = remote_global_edge_owners.at(aux_g->ghost_unmap[i]);
-  } 
+  } */
 }
 
 
@@ -1056,16 +1179,18 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
                           uint64_t * aux_labels, uint64_t* final_labels){
   //update final_labels (vertex labels) with the edge labels from aux_labels
   for(uint64_t i = 0; i < g->n_local; i++){
-    for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[j+1]; j++){
+    for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       uint64_t vert1_lid = i;
       uint64_t vert2_lid = g->out_edges[j];
       uint64_t edge_gid = g->edge_unmap[j];
       uint64_t edge_lid = get_value(aux_g->map, edge_gid);
-      if(final_labels[vert1_lid] > aux_labels[edge_lid]){
-        final_labels[vert1_lid] = aux_labels[edge_lid];
-      }
-      if(final_labels[vert2_lid] > aux_labels[edge_lid]){
-        final_labels[vert2_lid] = aux_labels[edge_lid];
+      if(edge_lid != NULL_KEY){
+        if(final_labels[vert1_lid] > aux_labels[edge_lid]){
+          final_labels[vert1_lid] = aux_labels[edge_lid];
+        }
+        if(final_labels[vert2_lid] > aux_labels[edge_lid]){
+          final_labels[vert2_lid] = aux_labels[edge_lid];
+        }
       }
     }
   }
@@ -1133,6 +1258,18 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       srcs[j] = i;
     }
   }
+  /*if(get_value(g->edge_map,97345) != NULL_KEY){
+    std::cout<<"global edge index 97345 corresponds to local edge "<<get_value(g->edge_map,97345)<<", which has endpoints "
+             <<srcs[get_value(g->edge_map,97345)]<<", "<<g->out_edges[get_value(g->edge_map,97345)]<<"\n";
+  } else {
+    std::cout<<"global edge index 97345 is remote\n";
+    for(int i = 0; i < g->n_ghost; i++){
+      if(g->ghost_unmap[i] == 4826 || g->ghost_unmap[i] == 10600){
+        std::cout<<"vertex "<<g->ghost_unmap[i]<<" is a ghost\n";
+      }
+    }
+  }
+  while(true);*/
   /*for(uint64_t i = 0; i < g->m; i++){
     if(get_value(g->edge_map,i) != NULL_KEY){
       uint64_t local_edge_index = get_value(g->edge_map, i);
@@ -1313,7 +1450,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }*/
   //6. remap labels to original edges and extend the labels to include certain non-tree edges that were excluded from the auxiliary graph.
   uint64_t* bicc_labels = new uint64_t[g->n_total];
-  for(int i = 0; i < g->n_total; i++) bicc_labels[i] = 0;
+  for(int i = 0; i < g->n_total; i++) bicc_labels[i] = NULL_KEY;
   finish_edge_labeling(g,srcs,aux_g,preorder,parents,labels,bicc_labels);
   //std::cout<<"Rank "<<procid<< " finished final edge labeling\n";
   //std::cout<<"aux_g->n = "<<aux_g->n_total<<" aux_g->m = "<<aux_g->m<<"\n";
@@ -1341,6 +1478,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       if(levels[i] < levels[g->out_edges[j]] && bicc_labels[i] != bicc_labels[g->out_edges[j]]){
         artpts[n_artpts++] = g->local_unmap[i];
+        break;
       }
     }
   }
@@ -1396,7 +1534,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   delete [] lows;
   delete [] highs;
   //need to delete aux_g carefully.
-  delete [] labels;
+  //delete [] labels;
   delete [] bicc_labels;
   delete [] artpts; 
   delete [] sendcnts;

@@ -77,12 +77,12 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
   if(ggi->global_edge_indices != NULL) g->edge_map = (struct fast_map*)malloc(sizeof(struct fast_map));
   uint64_t* out_edges = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
-  uint64_t* edge_unmap = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
+  if(ggi->global_edge_indices != NULL) g->edge_unmap = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
   uint64_t* out_degree_list = (uint64_t*)malloc((g->n_local+1)*sizeof(uint64_t));
   uint64_t* temp_counts = (uint64_t*)malloc(g->n_local*sizeof(uint64_t));
   if (out_edges == NULL || out_degree_list == NULL || temp_counts == NULL)
     throw_err("create_graph(), unable to allocate graph edge storage", procid);
-
+  std::cout<<"create_graph(), creating CSR\n";
 #pragma omp parallel
 {
 #pragma omp for nowait
@@ -98,23 +98,23 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
   for (uint64_t i = 0; i < g->n_local; ++i)
     out_degree_list[i+1] = out_degree_list[i] + temp_counts[i];
   memcpy(temp_counts, out_degree_list, g->n_local*sizeof(uint64_t));
-
+  
   for (uint64_t i = 0; i < g->m_local*2; i+=2){
     out_edges[temp_counts[ggi->gen_edges[i] - g->n_offset]] = ggi->gen_edges[i+1];
     if(ggi->global_edge_indices != NULL){
-      edge_unmap[temp_counts[ggi->gen_edges[i] - g->n_offset]++] = ggi->global_edge_indices[i/2];
+      g->edge_unmap[temp_counts[ggi->gen_edges[i] - g->n_offset]++] = ggi->global_edge_indices[i/2];
     }
   }
   if(ggi->global_edge_indices != NULL){ 
     init_map(g->edge_map, g->m_local*2);
     for(uint64_t i = 0; i < g->m_local; i++){
-      std::cout<<"setting global edge index "<<edge_unmap[i]<<" to local index "<<i<<"\n";
-      if(get_value(g->edge_map, edge_unmap[i]) == NULL_KEY){
-        set_value(g->edge_map, edge_unmap[i],i);
+      //std::cout<<"setting global edge index "<<edge_unmap[i]<<" to local index "<<i<<"\n";
+      if(get_value(g->edge_map, g->edge_unmap[i]) == NULL_KEY){
+        set_value(g->edge_map, g->edge_unmap[i],i);
       }
     }
   }
-
+  
   free(ggi->gen_edges);
   free(ggi->global_edge_indices);
   free(temp_counts);
