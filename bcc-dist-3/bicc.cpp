@@ -97,7 +97,7 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
 #pragma omp parallel default(shared)
 {
   thread_queue_t tq;
-  init_thread_queue(&tq);  
+  init_thread_queue(&tq);
 
 #pragma omp for
   for (uint64_t i = 0; i < g->n_total; ++i)
@@ -164,6 +164,33 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
       ++level;
     }
   } // end while
+
+#pragma omp for nowait
+  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    uint64_t vert = g->local_unmap[vert_index];
+    uint64_t parent = parents[vert_index];
+    uint64_t parent_index = get_value(g->map, parent);
+    if (parent_index >= g->n_local) {
+      add_vid_to_send(&tq, q, parent_index, vert);
+    }
+  }
+  
+  empty_queue(&tq, q);
+  empty_send(&tq, q);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_verts_bicc(g, comm, q);
+}
+
+#pragma omp for
+  for (uint64_t i = 0; i < q->queue_size; i += 2) {
+    uint64_t parent = q->queue[i];
+    uint64_t child = q->queue[i+1];
+    uint64_t child_index = get_value(g->map, child);
+    parents[child_index] = parent;
+  }
 
   clear_thread_queue(&tq);
 } // end parallel
@@ -397,8 +424,13 @@ int run_art_pts(dist_graph_t* g, mpi_data_t* comm, uint64_t* high)
     is_art[i] = false;
 
 #pragma omp parallel for
-  for (uint64_t i = 0; i < g->n_local; ++i)
+  for (uint64_t i = 0; i < g->n_local; ++i) {
     is_art[high[i]] = true;
+    if (high[i] > g->n) {
+      printf("too high %d %lu %lu\n", procid, i, high[i]);
+      printf("%lu %lu\n", g->local_unmap[i], out_degree(g, i));
+    }
+  }
 
   MPI_Allreduce(MPI_IN_PLACE, is_art, g->n, 
     MPI::BOOL, MPI_LOR, MPI_COMM_WORLD);

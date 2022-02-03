@@ -60,7 +60,7 @@ extern int procid, nprocs;
 extern bool verbose, debug, debug2, verify, output;
 
 #define MAX_SEND_SIZE 268435456
-#define THREAD_QUEUE_SIZE 3072
+#define THREAD_QUEUE_SIZE 7168
 
 struct mpi_data_t {
   int32_t* sendcounts;
@@ -152,6 +152,12 @@ inline void update_sendcounts_thread(dist_graph_t* g,
 inline void update_sendcounts_thread(dist_graph_t* g, 
                               thread_comm_t* tc, uint64_t vert_index,
                               uint64_t count_data);
+inline void update_sendcounts_thread_ghost(dist_graph_t* g, 
+                              thread_comm_t* tc, uint64_t vert_index);
+inline void update_vid_data_queues_ghost(dist_graph_t* g, 
+                            thread_comm_t* tc, mpi_data_t* comm,
+                            uint64_t vert_index, int32_t* data);
+
 
 inline void update_vid_data_queues(dist_graph_t* g, 
                             thread_comm_t* tc, mpi_data_t* comm,
@@ -432,6 +438,8 @@ inline void exchange_vert_data(dist_graph_t* g, mpi_data_t* comm,
                 MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);  
 
   q->send_size = 0;
+  q->queue_size = task_queue_size;
+  q->next_size = 0;
 }
 
 
@@ -686,6 +694,14 @@ inline void update_sendcounts_thread(dist_graph_t* g,
   }
 }
 
+inline void update_sendcounts_thread_ghost(dist_graph_t* g, 
+                                     thread_comm_t* tc, 
+                                     uint64_t vert_index)
+{
+  int32_t vert_rank = g->ghost_tasks[vert_index-g->n_local];
+  ++tc->sendcounts_thread[vert_rank];
+}
+
 inline void update_vid_data_queues(dist_graph_t* g, 
                                    thread_comm_t* tc, mpi_data_t* comm,
                                    uint64_t vert_index, uint64_t data)
@@ -739,6 +755,14 @@ inline void update_vid_data_queues(dist_graph_t* g,
       }
     }
   }
+}
+
+inline void update_vid_data_queues_ghost(dist_graph_t* g, 
+                                   thread_comm_t* tc, mpi_data_t* comm,
+                                   uint64_t vert_index, int32_t data)
+{
+  int32_t vert_rank = g->ghost_tasks[vert_index - g->n_local];
+  add_vid_data_to_send(tc, comm, g->ghost_unmap[vert_index - g->n_local], data, vert_rank);
 }
 
 
