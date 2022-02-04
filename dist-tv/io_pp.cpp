@@ -111,7 +111,7 @@ int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
 
   //set global edge indices
   for(uint64_t i = 0 ; i < nedges; i++) {
-    std::cout<<"setting global_edge_indices["<<i<<"] to "<<edge_offset+i<<", for edge "<<gen_edges[i*2]<<" "<<gen_edges[i*2 +1]<<"\n";
+    //std::cout<<"setting global_edge_indices["<<i<<"] to "<<edge_offset+i<<", for edge "<<gen_edges[i*2]<<" "<<gen_edges[i*2 +1]<<"\n";
     global_edge_indices[i] = edge_offset+i;
   }
 
@@ -422,10 +422,10 @@ int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm)
   ggi->gen_edges = recvbuf;
   ggi->global_edge_indices = gei_recvbuf;
   ggi->m_local_edges = total_recv / 2;
-  std::cout<<"global edge indices has "<<total_recv/2<<" entries\n";
-  for(int i = 0; i < total_recv/2; i++){
+  //std::cout<<"global edge indices has "<<total_recv/2<<" entries\n";
+  /*for(int i = 0; i < total_recv/2; i++){
     std::cout<<"Task "<<procid<<": global_edge_indices["<<i<<"] = "<<gei_recvbuf[i]<<" , for edge "<<recvbuf[i*2]<<" "<<recvbuf[i*2 +1]<<"\n";
-  }
+  }*/
   if (verbose) {
     elt = omp_get_wtime() - elt;
     printf("Task %d exchange_out_edges() sent %lu, recv %lu, m_local_edges %lu, %9.6f (s)\n", procid, total_send, total_recv, ggi->m_local_edges, elt);
