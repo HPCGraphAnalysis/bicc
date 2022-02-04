@@ -53,6 +53,22 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   uint64_t** ranks = new uint64_t*[g->n_local];
   bool* visited = new bool[g->n_total];
   
+  // pre-order specific computations
+  uint64_t max_preorder = 0;
+  uint64_t min_preorder = 0;
+  uint64_t num_per_rank = 0;
+  uint64_t num_this_rank = 0;
+  
+  // stuff to condense preorder labels
+  uint64_t* pre_per_rank = new uint64_t[nprocs];
+  uint64_t* pre_offsets_rank = new uint64_t[nprocs+1];
+  uint64_t* pre_per_thread = NULL;
+  uint64_t* pre_offsets_thread = NULL;
+  uint64_t rank_min_preorder = NULL_KEY;
+  uint64_t rank_max_preorder = 0;
+  uint64_t rank_preorder_spread = 0;
+  uint64_t spread_per_thread = 0;
+  
   comm->global_queue_size = 1;
 #pragma omp parallel
 {
@@ -62,6 +78,8 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   init_thread_queue(&tq);
   init_thread_pre(&pret);
   init_thread_comm(&tc);
+  int32_t tid = omp_get_thread_num();
+  int32_t nt = omp_get_num_threads();
   
 #pragma omp for
   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index)
@@ -148,7 +166,7 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   }     
 
 #pragma omp for 
-  for (uint64_t i = 0; i < g->n_total; ++i)
+  for (uint64_t i = 0; i < g->n_local; ++i)
     if (subscripts[i] == NULL_KEY)
       printf("BVA %lu\n", i);
   
@@ -457,16 +475,422 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp barrier
   } // end while  
   
-  // set preorder and num_desc values
+  // get max preorder
+#pragma omp for reduction(max:max_preorder)
+  for (uint64_t i = 0; i < g->n_local; ++i) {
+    if (counts[i][0] > max_preorder) {
+      max_preorder = counts[i][0];
+    }
+  }
+  
+#pragma omp single
+{
+  printf("Rank %d max preorder %lu\n", procid, max_preorder);
+  MPI_Allreduce(MPI_IN_PLACE, &max_preorder, 1, 
+    MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+  printf("Rank %d global preorder %lu\n", procid, max_preorder);
+}
+  
+  // set values using max preorder
 #pragma omp for
   for (uint64_t i = 0; i < g->n_local; ++i) {
-    preorders[i] = counts[i][0];
-    printf("%lu %lu\n", i, preorders[i]);
-  } 
+    preorders[i] = max_preorder - counts[i][0];
+  }
+
+#pragma omp single
+{
+  num_per_rank = max_preorder / (uint64_t)nprocs + 1;  
+}
+  // build arrays and do exchange
+#pragma omp for
+  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    uint64_t vert = g->local_unmap[vert_index];
+    uint64_t preorder = preorders[vert_index];    
+    int32_t rank = preorder / num_per_rank;
+    
+    // terribly inefficient
+    add_to_pre(&pret, preq,
+          (uint64_t)procid, 0, 0,
+          vert, rank, preorder, 0);
+  }
+  
+  empty_pre_queue(&pret, preq);
+#pragma omp barrier
+    
+  // exchange passing data
+  for (int32_t i = 0; i < nprocs; ++i)
+    tc.sendcounts_thread[i] = 0;
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < preq->next_size; i+=7)
+  {
+    int32_t send_rank = (int32_t)preq->queue_next[i+4];
+    tc.sendcounts_thread[send_rank] += 7;
+  }
+
+  for (int32_t i = 0; i < nprocs; ++i)
+  {
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
+#pragma omp barrier
+
+#pragma omp single
+{
+  init_sendbuf_pre(comm);
+}
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < preq->next_size; i+=7)
+  {
+    int32_t send_rank = (int32_t)preq->queue_next[i+4];
+    tc.sendcounts_thread[send_rank] += 7;
+    update_pre_send(&tc, comm, preq, i);
+  }
+
+  empty_pre_send(&tc, comm, preq);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_pre(g, comm);
+  if (comm->total_recv >= preq->queue_length) {
+    if (debug) printf("%d realloc: %li %li\n", procid, comm->total_recv, preq->queue_length);
+    preq->queue_length = comm->total_recv;
+    preq->queue = (uint64_t*)realloc(preq->queue, preq->queue_length*sizeof(uint64_t));
+    preq->queue_next = (uint64_t*)realloc(preq->queue_next, preq->queue_length*sizeof(uint64_t));
+    if (preq->queue == NULL || preq->queue_next == NULL)
+      throw_err("realloc() queues, unable to allocate resources\n",procid);
+  }
+  memcpy(preq->queue, comm->recvbuf_vert, comm->total_recv*sizeof(uint64_t));
+  clear_recvbuf_pre(comm);
+  MPI_Allreduce(&comm->total_recv, &comm->global_queue_size, 1,
+                MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  preq->queue_size = comm->total_recv;
+  preq->next_size = 0;
+  
+  
+  // share how many per rank and compute prefix sums
+  for (int32_t i = 0; i < nprocs; ++i)
+    pre_per_rank[i] = 0;
+  
+  num_this_rank = preq->queue_size / 7;
+  printf("Rank %d num %lu\n", procid, num_this_rank);
+  
+  MPI_Allgather(&num_this_rank, 1, MPI_UINT64_T, 
+    pre_per_rank, 1, MPI_UINT64_T, MPI_COMM_WORLD);
+  pre_offsets_rank[0] = 0;
+  for (int32_t i = 1; i < nprocs; ++i) {
+    pre_offsets_rank[i] = pre_offsets_rank[i-1] + pre_per_rank[i-1];
+    printf("Rank %d offsets rank %d %lu -- %lu %lu\n", procid, i,  
+      pre_offsets_rank[i], pre_offsets_rank[i-1], pre_per_rank[i-1]);
+  }
+} // end single
+
+  // do parallel quicksort
+  // first, get min/max offsets
+#pragma omp for reduction(max:rank_max_preorder) \
+                      reduction(min:rank_min_preorder)
+  for (uint64_t i = 0; i < preq->queue_size; i += 7) {
+    uint64_t preorder = preq->queue[i+5];
+    if (preorder > rank_max_preorder)
+      rank_max_preorder = preorder;
+    if (preorder < rank_min_preorder)
+      rank_min_preorder = preorder;
+  }
+
+#pragma omp single
+{
+  printf("Rank %d max preorder %lu min preorder %lu\n",
+    procid, rank_max_preorder, rank_min_preorder);
+  rank_preorder_spread = rank_max_preorder - rank_min_preorder;
+  spread_per_thread = rank_preorder_spread / nt + 1;
+  pre_per_thread = (uint64_t*)calloc(nt, sizeof(uint64_t));
+  pre_offsets_thread = (uint64_t*)calloc(nt+1, sizeof(uint64_t));
+}
+  
+  // count how large each thread's array will be
+  // get start<->end for the preorders I'm considering
+  uint64_t my_thread_start = (uint64_t)tid*spread_per_thread;
+  uint64_t my_thread_end = (uint64_t)(tid+1)*spread_per_thread;
+  uint64_t my_pre_count = 0;
+  printf("Rank %d thread %d my start %lu my end %lu\n",
+    procid, tid, my_thread_start, my_thread_end);
+    
+  // do counting
+  for (uint64_t i = 0; i < preq->queue_size; i += 7) {
+    uint64_t preorder = preq->queue[i+5] - rank_min_preorder;
+    if (preorder >= my_thread_start && preorder < my_thread_end)
+      ++my_pre_count;
+  }
+  
+  // determine thread offsets
+  pre_per_thread[tid] = my_pre_count;
+  printf("Rank %d thread %d my count %lu\n",
+    procid, tid, my_pre_count);
+  
+#pragma omp barrier
+  
+#pragma omp single
+{
+  pre_offsets_thread[0] = 0;
+  for (int32_t i = 1; i < nt; ++i) {
+    pre_offsets_thread[i] = pre_offsets_thread[i-1] + pre_per_thread[i-1];
+    printf("offsets thread %d %lu -- %lu %lu\n", i,  pre_offsets_thread[i],
+      pre_offsets_thread[i-1], pre_per_thread[i-1]);
+  }
+}
+
+  // allocate space
+  uint64_t* my_preorders = new uint64_t[my_pre_count*3];
+  my_pre_count = 0;
+  
+  // place values into my thread
+  // preorder labels will now be from 0 ... (max-min preorder)
+  for (uint64_t i = 0; i < preq->queue_size; i += 7) {
+    uint64_t rank = preq->queue[i];
+    uint64_t vert = preq->queue[i+3];
+    uint64_t preorder = preq->queue[i+5] - rank_min_preorder;
+    if (preorder >= my_thread_start && preorder < my_thread_end) {
+      my_preorders[my_pre_count++] = preorder;
+      my_preorders[my_pre_count++] = vert;
+      my_preorders[my_pre_count++] = rank;
+    }
+  }
+  
+  printf("Rank %d thread %d my range %lu %lu\n",
+    procid, tid, pre_offsets_thread[tid] + pre_offsets_rank[procid],
+    pre_offsets_thread[tid] + pre_offsets_rank[procid] + pre_per_thread[tid]);
+  
+  // do my sorting
+  if (my_pre_count > 0) {
+    quicksort_inc(my_preorders, 0, my_pre_count-3);
+
+    // do a relabeling using calculated offsets
+    // my labels are my ordering+thread_offsets+rank_offset
+    // place labels into queue
+    for (uint64_t i = 0; i < my_pre_count; i += 3) {
+      //printf("before map %lu after map %lu -- %lu %lu %lu\n", my_preorders[i],
+      //  i/3 + pre_offsets_thread[tid] + pre_offsets_rank[procid],
+      //  i/3, pre_offsets_thread[tid], pre_offsets_rank[procid]);
+      my_preorders[i] = i/3 + 
+                          pre_offsets_thread[tid] + pre_offsets_rank[procid];
+      uint64_t preorder = my_preorders[i];
+      uint64_t vert = my_preorders[i+1];
+      uint64_t rank = my_preorders[i+2];
+      add_to_pre(&pret, preq,
+            0, 0, 0,
+            vert, rank, preorder, 0);
+    }
+      
+    empty_pre_queue(&pret, preq);
+  }
+#pragma omp barrier
+    
+  // exchange passing data
+  for (int32_t i = 0; i < nprocs; ++i)
+    tc.sendcounts_thread[i] = 0;
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < preq->next_size; i+=7)
+  {
+    int32_t send_rank = (int32_t)preq->queue_next[i+4];
+    tc.sendcounts_thread[send_rank] += 7;
+  }
+
+  for (int32_t i = 0; i < nprocs; ++i)
+  {
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
+#pragma omp barrier
+
+#pragma omp single
+{
+  init_sendbuf_pre(comm);
+}
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < preq->next_size; i+=7)
+  {
+    int32_t send_rank = (int32_t)preq->queue_next[i+4];
+    tc.sendcounts_thread[send_rank] += 7;
+    update_pre_send(&tc, comm, preq, i);
+  }
+
+  empty_pre_send(&tc, comm, preq);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_pre(g, comm);
+  memcpy(preq->queue, comm->recvbuf_vert, comm->total_recv*sizeof(uint64_t));
+  clear_recvbuf_pre(comm);
+  MPI_Allreduce(&comm->total_recv, &comm->global_queue_size, 1,
+                MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  preq->queue_size = comm->total_recv;
+  preq->next_size = 0;
+} // end single
+
+#pragma omp for
+  for (uint64_t i = 0; i < preq->queue_size; i += 7) {
+    uint64_t vert = preq->queue[i+3];
+    uint64_t preorder = preq->queue[i+5];
+    uint64_t vert_index = get_value(g->map, vert);
+    preorders[vert_index] = preorder;
+    //printf("%lu %lu %lu\n", vert_index, vert, preorder);
+  }
+
+#pragma omp single
+{
+  uint64_t* all_preorders = new uint64_t[g->n];
+  
+  for (uint64_t i = 0; i < g->n; ++i)
+    all_preorders[i] = 0;
+  
+  for (uint64_t i = 0; i < g->n_local; ++i) {
+    uint64_t vert = g->local_unmap[i];
+    all_preorders[vert] = preorders[i];
+  }
+  
+  MPI_Allreduce(MPI_IN_PLACE, all_preorders, g->n, 
+    MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  
+  bool* has_label = new bool[g->n];
+  for (uint64_t i = 0; i < g->n; ++i)
+    has_label[i] = 0;
+  
+  for (uint64_t i = 0; i < g->n; ++i) {
+    //printf("%lu %lu\n", i, all_preorders[i]);
+    assert(has_label[all_preorders[i]] == false);
+    has_label[all_preorders[i]] = true;
+  }
+}
+  
+  // do boundary exchange of preorders  
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_local; ++i)
+  {
+    add_vid_to_send(&tq, q, i);
+    add_vid_to_queue(&tq, q, i);
+  }
+
+  empty_send(&tq, q);
+  empty_queue(&tq, q);
+#pragma omp barrier
+
+  for (int32_t i = 0; i < nprocs; ++i)
+      tc.sendcounts_thread[i] = 0;
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; ++i)
+  {
+    uint64_t vert_index = q->queue_send[i];
+    update_sendcounts_thread(g, &tc, vert_index);
+  }
+
+  for (int32_t i = 0; i < nprocs; ++i)
+  {
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
+#pragma omp barrier
+
+#pragma omp single
+{
+  init_sendbuf_vid_data(comm);    
+}
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; ++i)
+  {
+    uint64_t vert_index = q->queue_send[i];
+    update_vid_data_queues(g, &tc, comm,
+                           vert_index, preorders[vert_index]);
+  }
+
+  empty_vid_data(&tc, comm);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_vert_data(g, comm, q);
+} // end single
+
+#pragma omp for
+  for (uint64_t i = 0; i < comm->total_recv; ++i)
+  {
+    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
+    preorders[index] = comm->recvbuf_data[i];
+  }
+
+#pragma omp single
+{
+  clear_recvbuf_vid_data(comm);
+}
+
+  clear_thread_comm(&tc);
+
+
+
+  // do an iterative parallel merge sort
+//   // https://www.geeksforgeeks.org/iterative-merge-sort/
+// #pragma omp for
+//   for (uint64_t i = 0; i < preq->queue_size; i+=7) {
+//     uint64_t vert = preq->queue[i+3];
+//     uint64_t rank = preq->queue[i+4];
+//     uint64_t preorder = preq->queue[i+5];
+    
+// for (uint64_t curr_size = 1; curr_size <= num_this_rank - 1; curr_size *= 2) {
+// #pragma omp for
+//   for (left_start=0; left_start<n-1; left_start += 2*curr_size)
+//   {
+//     uint64_t mid = min(left_start + curr_size - 1, num_this_rank - 1);
+//     uint64_t right_end = min(left_start + 2*curr_size - 1, num_this_rank - 1);
+//     uint64_t n1 = mid - left_start + 1;
+//     uint64_t n2 = right_end - mid;
+//     uint64_t* L = new uint64_t[n1];
+//     uint64_t* R = new uint64_t[n2];
+//     memcpy(L, &arr[left_start], n1*sizeof(uint64_t));
+//     memcpy(R, &arr[mid + 1], n2*sizeof(uint64_t));
+ 
+//     uint64_t i = 0;
+//     uint64_t j = 0;
+//     uint64_t k = left_start;
+//     while (i < n1 && j < n2) {
+//       if (L[i] <= R[j]) {
+//         arr[k] = L[i];
+//         ++i;
+//       } else {
+//         arr[k] = R[j];
+//         ++j;
+//       }
+//       ++k;
+//     }
+ 
+//     while (i < n1) {
+//       arr[k] = L[i];
+//       i++;
+//       k++;
+//     }
+ 
+//     while (j < n2) {
+//       arr[k] = R[j];
+//       j++;
+//       k++;
+//     }
+//   }
+// }
+ 
   
 } // end parallel
-  
-    
+
   return 0;
 }
 

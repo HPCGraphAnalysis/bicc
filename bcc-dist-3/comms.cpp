@@ -85,23 +85,29 @@ void init_comm_data(mpi_data_t* comm)
 {
   if (debug) { printf("Task %d init_comm_data() start\n", procid); }
 
-  comm->sendcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
-  comm->sendcounts_temp = (uint64_t*)malloc(nprocs*sizeof(uint64_t));
-  comm->recvcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
-  comm->recvcounts_temp = (uint64_t*)malloc(nprocs*sizeof(uint64_t));
-  comm->sdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
-  comm->rdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
-  comm->rdispls_temp = (uint64_t*)malloc(nprocs*sizeof(uint64_t));
-  comm->sdispls_cpy = (int32_t*)malloc(nprocs*sizeof(int32_t));
-  comm->sdispls_temp = (uint64_t*)malloc(nprocs*sizeof(int64_t));
-  comm->sdispls_cpy_temp = (uint64_t*)malloc(nprocs*sizeof(int64_t));
-
+  comm->sendcounts = (int32_t*)calloc(nprocs, sizeof(int32_t));
+  comm->sendcounts_temp = (uint64_t*)calloc(nprocs, sizeof(uint64_t));
+  comm->recvcounts = (int32_t*)calloc(nprocs, sizeof(int32_t));
+  comm->recvcounts_temp = (uint64_t*)calloc(nprocs, sizeof(uint64_t));
+  comm->sdispls = (int32_t*)calloc(nprocs, sizeof(int32_t));
+  comm->rdispls = (int32_t*)calloc(nprocs, sizeof(int32_t));
+  comm->rdispls_temp = (uint64_t*)calloc(nprocs, sizeof(uint64_t));
+  comm->sdispls_cpy = (int32_t*)calloc(nprocs, sizeof(int32_t));
+  comm->sdispls_temp = (uint64_t*)calloc(nprocs, sizeof(int64_t));
+  comm->sdispls_cpy_temp = (uint64_t*)calloc(nprocs, sizeof(int64_t));
+  comm->sendbuf_vert = NULL;
+  comm->sendbuf_data = NULL;
+  comm->sendbuf_data_flt = NULL;
+  comm->recvbuf_vert = NULL;
+  comm->recvbuf_data = NULL;
+  comm->recvbuf_data_flt = NULL;
+  
   if (comm->sendcounts == NULL || comm->sendcounts_temp == NULL ||
       comm->recvcounts == NULL || comm->sdispls == NULL || 
       comm->rdispls == NULL || comm->rdispls_temp == NULL ||
       comm->sdispls_cpy == NULL || comm->sdispls_cpy_temp == NULL)
     throw_err("init_comm_data(), unable to allocate resources\n", procid);
-
+  
   comm->total_recv = 0;
   comm->total_send = 0;
   comm->global_queue_size = 0;

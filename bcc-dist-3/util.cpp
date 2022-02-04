@@ -104,6 +104,40 @@ void quicksort_dec(uint64_t* arr1, uint64_t* arr2, int64_t left, int64_t right)
     quicksort_dec(arr1, arr2, i, right);
 }
 
+void quicksort_inc(uint64_t* arr1, int64_t left, int64_t right) 
+{
+  int64_t i = left;
+  int64_t j = right;
+  uint64_t temp;
+  uint64_t pivot_index = (left/3 + right/3) / 2 * 3;
+  uint64_t pivot = arr1[pivot_index];
+
+  while (i <= j) 
+  {
+    while (arr1[i] < pivot) {i += 3;}
+    while (arr1[j] > pivot) {j -= 3;}
+  
+    if (i <= j) 
+    {
+      temp = arr1[i];
+      arr1[i] = arr1[j];
+      arr1[j] = temp;
+      temp = arr1[i+1];
+      arr1[i+1] = arr1[j+1];
+      arr1[j+1] = temp;
+      temp = arr1[i+2];
+      arr1[i+2] = arr1[j+2];
+      arr1[j+2] = temp;
+      i += 3;
+      j -= 3;
+    }
+  }
+
+  if (j > left)
+    quicksort_inc(arr1, left, j);
+  if (i < right)
+    quicksort_inc(arr1, i, right);
+}
 
 uint64_t* str_to_array(char *input_list_str, uint64_t* num)
 {
