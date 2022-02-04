@@ -61,8 +61,153 @@
 
 #include "comms.h"
 #include "dist_graph.h"
-#include "bfs.h"
+//#include "bfs.h"
 #include "reduce_graph.h"
+
+#define NOT_VISITED 18446744073709551615U
+#define VISITED 18446744073709551614U
+#define ASYNCH 1
+
+int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
+  uint64_t* parents, uint64_t* levels, uint64_t root)
+{
+  if (debug) { printf("procid %d bicc_bfs() start\n", procid); }
+  double elt = 0.0;
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime();
+  }
+
+  queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));;
+  init_queue_data(g, q);
+
+  q->queue_size = 0;
+  q->next_size = 0;
+  q->send_size = 0;
+
+  uint64_t root_index = get_value(g->map, root);
+  if (root_index != NULL_KEY && root_index < g->n_local)
+  {
+    q->queue[0] = root;
+    q->queue[1] = root;
+    q->queue_size = 2;
+  }
+
+  bool* visited = new bool[g->n_total];
+
+  uint64_t level = 0;
+  comm->global_queue_size = 1;
+#pragma omp parallel default(shared)
+{
+  thread_queue_t tq;
+  init_thread_queue(&tq);
+
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_total; ++i)
+    parents[i] = NOT_VISITED;
+
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_total; ++i)
+    levels[i] = NOT_VISITED;
+
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_total; ++i)
+    visited[i] = false;
+
+  while (comm->global_queue_size)
+  {
+#pragma omp single
+    if (debug) {
+      printf("Task: %d bicc_bfs() GQ: %lu, TQ: %lu\n",
+        procid, comm->global_queue_size, q->queue_size);
+    }
+
+#pragma omp for schedule(guided) nowait
+    for (uint64_t i = 0; i < q->queue_size; i += 2)
+    {
+      uint64_t vert = q->queue[i];
+      uint64_t parent = q->queue[i+1];
+      uint64_t vert_index = get_value(g->map, vert);
+      if (parents[vert_index] != VISITED && parents[vert_index] != NOT_VISITED)
+        continue;
+
+      parents[vert_index] = parent;
+      levels[vert_index] = level;
+
+      uint64_t out_degree = out_degree(g, vert_index);
+      uint64_t* outs = out_vertices(g, vert_index);
+
+      for (uint64_t j = 0; j < out_degree; ++j)
+      {
+        uint64_t out_index = outs[j];
+
+        uint64_t test = 0;
+#pragma omp atomic capture
+        { test = parents[out_index]; parents[out_index] = VISITED; }
+        if (test == NOT_VISITED) {
+          if (out_index < g->n_local) {
+            add_vid_to_queue(&tq, q, g->local_unmap[out_index], vert);
+          } else {
+            add_vid_to_send(&tq, q, out_index, vert);
+          }
+        } else if (test != VISITED) {
+          parents[out_index] = test;
+        }
+      }
+    }
+
+    empty_queue(&tq, q);
+    empty_send(&tq, q);
+#pragma omp barrier
+
+#pragma omp single
+    {
+      exchange_verts_bicc(g, comm, q);
+      ++level;
+    }
+  } // end while
+
+#pragma omp for nowait
+  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    uint64_t vert = g->local_unmap[vert_index];
+    uint64_t parent = parents[vert_index];
+    uint64_t parent_index = get_value(g->map, parent);
+    if (parent_index >= g->n_local) {
+      add_vid_to_send(&tq, q, parent_index, vert);
+    }
+  }
+
+  empty_queue(&tq, q);
+  empty_send(&tq, q);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_verts_bicc(g, comm, q);
+}
+
+#pragma omp for
+  for (uint64_t i = 0; i < q->queue_size; i += 2) {
+    uint64_t parent = q->queue[i];
+    uint64_t child = q->queue[i+1];
+    uint64_t child_index = get_value(g->map, child);
+    parents[child_index] = parent;
+  }
+
+  clear_thread_queue(&tq);
+} // end parallel
+
+  clear_queue_data(q);
+  free(q);
+
+  if (verbose) {
+    elt = omp_get_wtime() - elt;
+    printf("Task %d bicc_bfs() time %9.6f (s)\n", procid, elt);
+  }
+  if (debug) { printf("Task %d bicc_bfs() success\n", procid); }
+
+  return 0;
+}
 
 
 struct pair_hash{
@@ -1306,7 +1451,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       maxDegreeVert = i;
     }
   }*/
-  bicc_bfs_pull(g, comm, q, parents, levels, g->max_degree_vert);
+  bicc_bfs(g, comm, parents, levels, g->max_degree_vert);
   
   MPI_Barrier(MPI_COMM_WORLD);
   
