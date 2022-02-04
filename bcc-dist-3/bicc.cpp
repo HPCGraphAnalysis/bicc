@@ -165,32 +165,122 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
     }
   } // end while
 
-#pragma omp for nowait
-  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
-    uint64_t vert = g->local_unmap[vert_index];
-    uint64_t parent = parents[vert_index];
-    uint64_t parent_index = get_value(g->map, parent);
-    if (parent_index >= g->n_local) {
-      add_vid_to_send(&tq, q, parent_index, vert);
-    }
-  }
+
+
+
+  // do full boundary exchange of parents data
+
+  thread_comm_t tc;
+  init_thread_comm(&tc);
   
-  empty_queue(&tq, q);
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_local; ++i)
+  {
+    add_vid_to_send(&tq, q, i);
+    add_vid_to_queue(&tq, q, i);
+  }
+
   empty_send(&tq, q);
+  empty_queue(&tq, q);
+#pragma omp barrier
+
+  for (int32_t i = 0; i < nprocs; ++i)
+      tc.sendcounts_thread[i] = 0;
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; ++i)
+  {
+    uint64_t vert_index = q->queue_send[i];
+    update_sendcounts_thread(g, &tc, vert_index);
+  }
+
+  for (int32_t i = 0; i < nprocs; ++i)
+  {
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
 #pragma omp barrier
 
 #pragma omp single
 {
-  exchange_verts_bicc(g, comm, q);
+  init_sendbuf_vid_data(comm);    
 }
 
-#pragma omp for
-  for (uint64_t i = 0; i < q->queue_size; i += 2) {
-    uint64_t parent = q->queue[i];
-    uint64_t child = q->queue[i+1];
-    uint64_t child_index = get_value(g->map, child);
-    parents[child_index] = parent;
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; ++i)
+  {
+    uint64_t vert_index = q->queue_send[i];
+    update_vid_data_queues(g, &tc, comm,
+                           vert_index, parents[vert_index]);
   }
+
+  empty_vid_data(&tc, comm);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_vert_data(g, comm, q);
+} // end single
+
+#pragma omp for
+  for (uint64_t i = 0; i < comm->total_recv; ++i)
+  {
+    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
+    parents[index] = comm->recvbuf_data[i];
+  }
+
+#pragma omp single
+{
+  clear_recvbuf_vid_data(comm);
+}
+
+  clear_thread_comm(&tc);
+
+
+// #pragma omp for nowait
+//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+//     uint64_t vert = g->local_unmap[vert_index];
+//     uint64_t parent = parents[vert_index];
+//     uint64_t parent_index = get_value(g->map, parent);
+    
+//     if (parent_index >= g->n_local) {
+//       //printf("woo %lu %lu\n", parent_index, vert);
+//       add_vid_to_send(&tq, q, parent_index, vert);
+//     }
+//   }
+  
+//   empty_queue(&tq, q);
+//   empty_send(&tq, q);
+// #pragma omp barrier
+
+// #pragma omp single
+// {
+//   //printf("%lu WOO \n", q->queue_next);
+//   exchange_verts_bicc(g, comm, q);
+// }
+
+// #pragma omp for
+//   for (uint64_t i = 0; i < q->queue_size; i += 2) {
+//     uint64_t parent = q->queue[i];
+//     uint64_t child = q->queue[i+1];
+//     uint64_t child_index = get_value(g->map, child);
+//     parents[child_index] = parent;
+//     assert(child_index >= g->n_local);
+//     //printf("WOO %lu %lu\n", parent, child);
+//   }
+
+// #pragma omp for
+//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+//     uint64_t out_degree = out_degree(g, vert_index);
+//     uint64_t* outs = out_vertices(g, vert_index);
+//     for (uint64_t j = 0; j < out_degree; ++j) {
+//       if (outs[j] >= g->n_local)
+//         assert(parents[outs[j]] < VISITED);
+//     }
+//   }
+
 
   clear_thread_queue(&tq);
 } // end parallel
