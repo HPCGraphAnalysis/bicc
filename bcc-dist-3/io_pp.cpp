@@ -58,8 +58,8 @@ extern int procid, nprocs;
 extern bool verbose, debug, verify, output;
 
 
-int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
-  bool offset_vids) 
+int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi, 
+                        bool offset_vids) 
 {  
   if (debug) { printf("Task %d load_graph_edges_32() start\n", procid); }
 
@@ -69,116 +69,89 @@ int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
     elt = omp_get_wtime();
   }
 
-  if (debug) {
-    printf("Task %d, reading: %s\n", 
-      procid, input_filename);
-  }
-
-  FILE* infp = fopen(input_filename, "rb");
+  FILE *infp = fopen(input_filename, "rb");
   if(infp == NULL)
     throw_err("load_graph_edges_32() unable to open input file", procid);
 
   fseek(infp, 0L, SEEK_END);
   uint64_t file_size = ftell(infp);
-  fclose(infp);
+  fseek(infp, 0L, SEEK_SET);
 
-  uint64_t nedges = file_size/(2*sizeof(uint32_t));
+  uint64_t nedges_global = file_size/(2*sizeof(uint32_t));
+  ggi->m = nedges_global;
 
-  ggi->m = nedges;
+  uint64_t read_offset_start = procid*2*sizeof(uint32_t)*(nedges_global/nprocs);
+  uint64_t read_offset_end = (procid+1)*2*sizeof(uint32_t)*(nedges_global/nprocs);
+
+  if (procid == nprocs - 1)
+    read_offset_end = 2*sizeof(uint32_t)*nedges_global;
+
+  uint64_t nedges = (read_offset_end - read_offset_start)/8;
   ggi->m_local_read = nedges;
 
   if (debug) {
-    printf("Task %d, nedges %ld\n", procid, nedges);
+    printf("Task %d, read_offset_start %ld, read_offset_end %ld, nedges_global %ld, nedges: %ld\n", procid, read_offset_start, read_offset_end, nedges_global, nedges);
   }
 
   uint32_t* gen_edges_read = (uint32_t*)malloc(2*nedges*sizeof(uint32_t));
-  uint64_t* gen_edges = (uint64_t*)malloc(4*nedges*sizeof(uint64_t));
-  if (gen_edges == NULL)
+  uint64_t* gen_edges = (uint64_t*)malloc(2*nedges*sizeof(uint64_t));
+  if (gen_edges_read == NULL || gen_edges == NULL)
     throw_err("load_graph_edges(), unable to allocate buffer", procid);
 
-  uint64_t read_edges = 0;
-#pragma omp parallel reduction(+:read_edges)
-{
-  uint64_t nthreads = (uint64_t)omp_get_num_threads();
-  uint64_t tid = (uint64_t)omp_get_thread_num();
+  fseek(infp, read_offset_start, SEEK_SET);
+  if (!fread(gen_edges_read, nedges, 2*sizeof(uint32_t), infp))
+    throw_err("Error: load_graph_edges_32(), can't read input file");
+  fclose(infp);
 
-  uint64_t t_offset = tid*2*sizeof(uint32_t)*(nedges / nthreads);
-  uint64_t t_offset_end = (tid+1)*2*sizeof(uint32_t)*(nedges / nthreads);
-  if (tid + 1 == nthreads)
-    t_offset_end = 2*sizeof(uint32_t)*nedges;
-  uint64_t t_nedges = (t_offset_end - t_offset)/(2*sizeof(uint32_t));
-  uint64_t gen_offset = t_offset / (sizeof(uint32_t));
-  uint32_t* t_gen_edges = gen_edges_read + gen_offset;
-
-  FILE* t_infp = fopen(input_filename, "rb");
-  fseek(t_infp, t_offset, SEEK_SET);
-  read_edges = fread(t_gen_edges, 2*sizeof(uint32_t),t_nedges,t_infp);
-  fclose(t_infp);
-
-#pragma omp barrier
-#pragma omp for
-  for (uint64_t i = 0; i < nedges*2; i+=2) {
+  for (uint64_t i = 0; i < nedges*2; ++i)
     gen_edges[i] = (uint64_t)gen_edges_read[i];
-    gen_edges[i+1] = (uint64_t)gen_edges_read[i+1];
-    gen_edges[nedges*2+i] = (uint64_t)gen_edges_read[i+1];
-    gen_edges[nedges*2+i+1] = (uint64_t)gen_edges_read[i];
-    //printf("%lu %lu\n", gen_edges[i], gen_edges[i+1]);
-  }
-} // end parallel
+
   free(gen_edges_read);
+  ggi->gen_edges = gen_edges;
 
   if (verbose) {
     elt = omp_get_wtime() - elt;
-    printf("Task %d read %lu / %lu edges, %9.6f (s)\n", procid, 
-      read_edges, nedges, elt);
+    printf("Task %d read %lu edges, %9.6f (s)\n", procid, nedges, elt);
   }
   
-
-  uint64_t max_vid = 0;
-#pragma omp parallel for reduction(max:max_vid)
+  uint64_t max_n = 0;
   for (uint64_t i = 0; i < ggi->m_local_read*2; ++i)
-    if (gen_edges[i] > max_vid)
-      max_vid = gen_edges[i];
-  MPI_Allreduce(MPI_IN_PLACE, &max_vid, 1,
-                MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
-  MPI_Allreduce(&ggi->m_local_read, &ggi->m, 1,
-                MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+    if (gen_edges[i] > max_n)
+      max_n = gen_edges[i];
+
+  uint64_t n_global;
+  MPI_Allreduce(&max_n, &n_global, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+  
+  ggi->n = n_global+1;
+  ggi->n_offset = (uint64_t)procid * (ggi->n / (uint64_t)nprocs + 1);
+  ggi->n_local = ggi->n / (uint64_t)nprocs + 1;
+  if (procid == nprocs - 1 && !offset_vids && !offset_vids)
+    ggi->n_local = n_global - ggi->n_offset + 1; 
+
 
   if (offset_vids)
   {
-#pragma omp parallel for reduction(max:max_vid)
+#pragma omp parallel for
     for (uint64_t i = 0; i < ggi->m_local_read*2; ++i)
     {
-      uint64_t task_id = gen_edges[i] / (uint64_t)nprocs;
-      uint64_t task = gen_edges[i] % (uint64_t)nprocs;
-      uint64_t task_offset = task * ((max_vid+1) / (uint64_t)nprocs + 1);
+      uint64_t task_id = ggi->gen_edges[i] / (uint64_t)nprocs;
+      uint64_t task = ggi->gen_edges[i] % (uint64_t)nprocs;
+      uint64_t task_offset = task * (ggi->n / (uint64_t)nprocs + 1);
       uint64_t new_vid = task_offset + task_id;
-      gen_edges[i] = new_vid;
-      if (new_vid > max_vid)
-        max_vid = new_vid;
+      new_vid = (new_vid >= ggi->n) ? (ggi->n - 1) : new_vid;
+      ggi->gen_edges[i] = new_vid;
     }
   }
-  MPI_Allreduce(MPI_IN_PLACE, &max_vid, 1,
-                MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
-
-  ggi->n = max_vid + 1;  
-  ggi->n_offset = procid * (ggi->n / nprocs + 1);
-  ggi->n_local = ggi->n / nprocs + 1;
-  if (procid == nprocs - 1)
-    ggi->n_local = ggi->n - ggi->n_offset;
-  ggi->gen_edges = gen_edges;
 
   if (verbose) {
     printf("Task %d, n %lu, n_offset %lu, n_local %lu\n", 
            procid, ggi->n, ggi->n_offset, ggi->n_local);
   }
 
-  if (debug) { 
-    printf("Task %d load_graph_edges_32() success\n", procid); 
-  }
-
+  if (debug) { printf("Task %d load_graph_edges_32() success\n", procid); }
   return 0;
 }
+
 
 
 int load_graph_edges_64(char *input_filename, graph_gen_data_t *ggi,
