@@ -43,21 +43,80 @@
 //@HEADER
 */
 
-#ifndef _UTIL_H_
-#define _UTIL_H_
+#include <mpi.h>
+#include <omp.h>
+#include <time.h>
+#include <getopt.h>
+#include <cstring>
 
-#include <stdint.h>
+int procid, nprocs;
+bool verbose, debug, debug2, verify, output;
 
-void throw_err(char const* err_message);
-void throw_err(char const* err_message, int32_t task);
-void throw_err(char const* err_message, int32_t task, int32_t thread);
+#include "dist_graph.h"
+#include "reduce_graph.h"
+#include "io_pp.h"
 
-void quicksort_dec(uint64_t* arr1, uint64_t* arr2, int64_t left, int64_t right);
-void quicksort_inc(uint64_t* arr1, int64_t left, int64_t right);
 
-uint64_t* str_to_array(char *input_list_str, uint64_t* num);
+int main(int argc, char **argv) 
+{
+  srand(time(0));
+  setbuf(stdout, 0);
+  MPI_Init(&argc, &argv);
+  MPI_Comm_rank(MPI_COMM_WORLD, &procid);
+  MPI_Comm_size(MPI_COMM_WORLD, &nprocs);
 
-void parallel_prefixsums(
-  uint64_t* in_array, uint64_t* out_array, uint64_t size);
+  if (argc < 2) {
+    if (procid == 0) printf("To run: %s [input graph] [output graph]\n", argv[0]);
+    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  verbose = true;
+  debug = true;
+  debug2 = false;
+  verify = false;
+  output = false;
+  bool offset_vids = false;
 
-#endif
+  char* input_filename = strdup(argv[1]);
+  char* output_filename = strdup(argv[2]);
+  char* part_list = NULL;
+
+  graph_gen_data_t* ggi = (graph_gen_data_t*)malloc(sizeof(graph_gen_data_t));
+  dist_graph_t* g = (dist_graph_t*)malloc(sizeof(dist_graph_t));
+  mpi_data_t* comm = (mpi_data_t*)malloc(sizeof(mpi_data_t));
+
+  init_comm_data(comm);
+  load_graph_edges_32(input_filename, ggi, offset_vids);
+  if (nprocs > 1) {
+    exchange_edges(ggi, comm);
+    create_graph(ggi, g);
+    relabel_edges(g);
+    if (part_list != NULL)
+      repart_graph(g, comm, part_list);
+  } else {
+    create_graph_serial(ggi, g);
+  }  
+  free(ggi);
+
+  get_max_degree_vert(g);
+  
+  queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));
+  init_queue_data(g, q);
+  dist_graph_t* g_new = reduce_graph(g, comm, q);
+  output_graph(g_new, output_filename);
+  
+  
+  
+
+  clear_graph(g);
+  clear_graph(g_new);
+  clear_comm_data(comm);
+  free(g);
+  free(comm);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  MPI_Finalize();
+
+  return 0;
+}
+

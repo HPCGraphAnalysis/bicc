@@ -43,21 +43,74 @@
 //@HEADER
 */
 
-#ifndef _UTIL_H_
-#define _UTIL_H_
+#ifndef _DIST_GRAPH_H_
+#define _DIST_GRAPH_H_
 
 #include <stdint.h>
 
-void throw_err(char const* err_message);
-void throw_err(char const* err_message, int32_t task);
-void throw_err(char const* err_message, int32_t task, int32_t thread);
+#include "fast_map.h"
 
-void quicksort_dec(uint64_t* arr1, uint64_t* arr2, int64_t left, int64_t right);
-void quicksort_inc(uint64_t* arr1, int64_t left, int64_t right);
+#define out_degree(g, n) (g->out_degree_list[n+1] - g->out_degree_list[n])
+#define out_vertices(g, n) &g->out_edges[g->out_degree_list[n]]
 
-uint64_t* str_to_array(char *input_list_str, uint64_t* num);
+struct dist_graph_t {
+  uint64_t n;
+  uint64_t m;
+  uint64_t m_local;
 
-void parallel_prefixsums(
-  uint64_t* in_array, uint64_t* out_array, uint64_t size);
+  uint64_t n_local;
+  uint64_t n_offset;
+  uint64_t n_ghost;
+  uint64_t n_total;
+
+  uint64_t max_degree_vert;
+  uint64_t max_out_degree;
+
+  uint64_t* out_edges;
+  uint64_t* out_degree_list;
+  uint64_t* ghost_degrees;
+
+  uint64_t* local_unmap;
+  uint64_t* ghost_unmap;
+  uint64_t* ghost_tasks;
+  fast_map* map;
+
+} ;
+
+
+struct graph_gen_data_t {  
+  uint64_t n;
+  uint64_t m;
+  uint64_t n_local;
+  uint64_t n_offset;
+
+  uint64_t m_local_read;
+  uint64_t m_local_edges;
+
+  uint64_t* gen_edges;
+} ;
+
+struct mpi_data_t;
+
+
+int create_graph(graph_gen_data_t *ggi, dist_graph_t *g);
+
+int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g);
+
+int clear_graph(dist_graph_t *g);
+
+int relabel_edges(dist_graph_t *g);
+
+int relabel_edges(dist_graph_t *g, int32_t* global_parts);
+
+int repart_graph(dist_graph_t*g, mpi_data_t* comm, char* part_file);
+
+int repart_graph(dist_graph_t*g, mpi_data_t* comm, int32_t* local_parts);
+
+int get_max_degree_vert(dist_graph_t *g);
+
+struct mpi_data_t;
+struct queue_data_t;
+int get_ghost_degrees(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q);
 
 #endif

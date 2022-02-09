@@ -349,5 +349,85 @@ inline void exchange_pre(dist_graph_t* g, mpi_data_t* comm)
 }
 
 
+
+inline void exchange_verts_pre(dist_graph_t* g, mpi_data_t* comm, 
+  queue_data_t* q)
+{
+  comm->global_queue_size = 0;
+  uint64_t task_queue_size = q->next_size + q->send_size;
+  MPI_Allreduce(&task_queue_size, &comm->global_queue_size, 1, 
+                MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);      
+  
+  uint64_t num_comms = comm->global_queue_size / (uint64_t)MAX_SEND_SIZE + 1;
+  uint64_t sum_recv = 0;
+  for (uint64_t c = 0; c < num_comms; ++c)
+  {
+    uint64_t send_begin = (q->send_size * c) / num_comms;
+    uint64_t send_end = (q->send_size * (c + 1)) / num_comms;
+    if (c == (num_comms-1))
+      send_end = q->send_size;
+    if (send_begin % 2 != 0) send_begin++;
+    if (send_end % 2 != 0) send_end++;
+
+    for (int32_t i = 0; i < nprocs; ++i)
+    {
+      comm->sendcounts[i] = 0;
+      comm->recvcounts[i] = 0;
+    }
+    for (uint64_t i = send_begin; i < send_end; i += 2)
+    {
+      uint64_t ghost_index = q->queue_send[i] - g->n_local;
+      uint64_t ghost_task = g->ghost_tasks[ghost_index];
+      comm->sendcounts[ghost_task] += 2;
+    }
+
+    MPI_Alltoall(comm->sendcounts, 1, MPI_INT32_T, 
+                 comm->recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+
+    comm->sdispls[0] = 0;
+    comm->sdispls_cpy[0] = 0;
+    comm->rdispls[0] = 0;
+    for (int32_t i = 1; i < nprocs; ++i)
+    {
+      comm->sdispls[i] = comm->sdispls[i-1] + comm->sendcounts[i-1];
+      comm->rdispls[i] = comm->rdispls[i-1] + comm->recvcounts[i-1];
+      comm->sdispls_cpy[i] = comm->sdispls[i];
+    }
+
+    int32_t cur_send = comm->sdispls[nprocs-1] + comm->sendcounts[nprocs-1];
+    int32_t cur_recv = comm->rdispls[nprocs-1] + comm->recvcounts[nprocs-1];
+    comm->sendbuf_vert = (uint64_t*)malloc((uint64_t)(cur_send+1)*sizeof(uint64_t));
+    if (comm->sendbuf_vert == NULL)
+      throw_err("exchange_verts(), unable to allocate comm buffers", procid);
+
+    for (uint64_t i = send_begin; i < send_end; i += 2)
+    {
+      uint64_t ghost_index = q->queue_send[i] - g->n_local;
+      uint64_t ghost_task = g->ghost_tasks[ghost_index];
+      uint64_t vert = g->ghost_unmap[ghost_index];
+      uint64_t parent = q->queue_send[i+1];
+      comm->sendbuf_vert[comm->sdispls_cpy[ghost_task]++] = vert; 
+      comm->sendbuf_vert[comm->sdispls_cpy[ghost_task]++] = parent; 
+    }
+
+    MPI_Alltoallv(comm->sendbuf_vert, 
+                  comm->sendcounts, comm->sdispls, MPI_UINT64_T, 
+                  q->queue_next+q->next_size+sum_recv, 
+                  comm->recvcounts, comm->rdispls, MPI_UINT64_T, 
+                  MPI_COMM_WORLD);
+    free(comm->sendbuf_vert);
+    sum_recv += cur_recv;
+  }
+
+  q->queue_size = q->next_size + sum_recv;
+  q->next_size = 0;
+  q->send_size = 0;
+  uint64_t* temp = q->queue;
+  q->queue = q->queue_next;
+  q->queue_next = temp;
+}
+
+
+
 #endif
 

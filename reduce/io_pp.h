@@ -43,21 +43,24 @@
 //@HEADER
 */
 
-#ifndef _UTIL_H_
-#define _UTIL_H_
+#ifndef _IO_PP_H_
+#define _IO_PP_H_
 
-#include <stdint.h>
+#include "dist_graph.h"
+#include "comms.h"
 
-void throw_err(char const* err_message);
-void throw_err(char const* err_message, int32_t task);
-void throw_err(char const* err_message, int32_t task, int32_t thread);
+int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
+  bool offset_vids);
 
-void quicksort_dec(uint64_t* arr1, uint64_t* arr2, int64_t left, int64_t right);
-void quicksort_inc(uint64_t* arr1, int64_t left, int64_t right);
+int load_graph_edges_64(char *input_filename, graph_gen_data_t *ggi,
+  bool offset_vids);
 
-uint64_t* str_to_array(char *input_list_str, uint64_t* num);
+int load_graph_edges_64_split(char *input_prefix, graph_gen_data_t *ggi,
+  bool offset_vids);
 
-void parallel_prefixsums(
-  uint64_t* in_array, uint64_t* out_array, uint64_t size);
+int write_labels(dist_graph_t* g, uint64_t* labels, char* labels_prefix);
+
+int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm);
+
 
 #endif

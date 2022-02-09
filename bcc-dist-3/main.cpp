@@ -57,6 +57,9 @@ bool verbose, debug, debug2, verify, output;
 #include "io_pp.h"
 #include "bicc.h"
 #include "wbter.h"
+#include "reduce_graph.h"
+#include "preorder_tree.h"
+#include "min_max_size.h"
 
 
 int main(int argc, char **argv) 
@@ -72,8 +75,8 @@ int main(int argc, char **argv)
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
-  verbose = false;
-  debug = false;
+  verbose = true;
+  debug = true;
   debug2 = false;
   verify = false;
   output = false;
@@ -112,8 +115,34 @@ int main(int argc, char **argv)
   free(ggi);
 
   get_max_degree_vert(g);
+  
+  queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));
+  init_queue_data(g, q);
+  //dist_graph_t* g_new = reduce_graph(g, comm, q);
+  //free(q);
+  
   root = g->max_degree_vert;
-  bicc_dist(g, comm, root);
+  
+  uint64_t* parents = new uint64_t[g->n_total];
+  uint64_t* levels = new uint64_t[g->n_total];
+  uint64_t* preorders = new uint64_t[g->n_total];
+  
+  bicc_bfs(g, comm, parents, levels, root);
+  preorder_tree(g, comm, q, parents, levels, preorders);
+  
+  uint64_t* num_descendents = new uint64_t[g->n_total];
+  uint64_t* mins = new uint64_t[g->n_total];
+  uint64_t* maxes = new uint64_t[g->n_total];
+  get_min_max_size(g, comm, q,
+    parents, preorders, 
+    num_descendents, mins, maxes);
+  
+  
+  // bicc_dist(g, comm, root);
+  
+  // get_max_degree_vert(g_new);
+  // root = g_new->max_degree_vert;
+  // bicc_dist(g_new, comm, root);
 
   clear_graph(g);
   clear_comm_data(comm);
