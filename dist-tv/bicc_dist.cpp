@@ -68,9 +68,9 @@
 #define VISITED 18446744073709551614U
 #define ASYNCH 1
 
-int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
+int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, 
   uint64_t* parents, uint64_t* levels, uint64_t root)
-{
+{  
   if (debug) { printf("procid %d bicc_bfs() start\n", procid); }
   double elt = 0.0;
   if (verbose) {
@@ -86,13 +86,13 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
   q->send_size = 0;
 
   uint64_t root_index = get_value(g->map, root);
-  if (root_index != NULL_KEY && root_index < g->n_local)
+  if (root_index != NULL_KEY && root_index < g->n_local)    
   {
     q->queue[0] = root;
     q->queue[1] = root;
     q->queue_size = 2;
   }
-
+  
   bool* visited = new bool[g->n_total];
 
   uint64_t level = 0;
@@ -109,17 +109,20 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
 #pragma omp for
   for (uint64_t i = 0; i < g->n_total; ++i)
     levels[i] = NOT_VISITED;
-
+  
 #pragma omp for
   for (uint64_t i = 0; i < g->n_total; ++i)
     visited[i] = false;
+#pragma omp for
+  for(int i = 0; i < nprocs; ++i)
+    comm->sendcounts_temp[i] = 0;
 
   while (comm->global_queue_size)
   {
 #pragma omp single
-    if (debug) {
-      printf("Task: %d bicc_bfs() GQ: %lu, TQ: %lu\n",
-        procid, comm->global_queue_size, q->queue_size);
+    if (debug) { 
+      printf("Task: %d bicc_bfs() GQ: %lu, TQ: %lu\n", 
+        procid, comm->global_queue_size, q->queue_size); 
     }
 
 #pragma omp for schedule(guided) nowait
@@ -130,7 +133,7 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
       uint64_t vert_index = get_value(g->map, vert);
       if (parents[vert_index] != VISITED && parents[vert_index] != NOT_VISITED)
         continue;
-
+      
       parents[vert_index] = parent;
       levels[vert_index] = level;
 
@@ -140,10 +143,11 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
       for (uint64_t j = 0; j < out_degree; ++j)
       {
         uint64_t out_index = outs[j];
-
+   
         uint64_t test = 0;
 #pragma omp atomic capture
         { test = parents[out_index]; parents[out_index] = VISITED; }
+        
         if (test == NOT_VISITED) {
           if (out_index < g->n_local) {
             add_vid_to_queue(&tq, q, g->local_unmap[out_index], vert);
@@ -154,7 +158,7 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
           parents[out_index] = test;
         }
       }
-    }
+    }  
 
     empty_queue(&tq, q);
     empty_send(&tq, q);
@@ -167,32 +171,122 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
     }
   } // end while
 
-#pragma omp for nowait
-  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
-    uint64_t vert = g->local_unmap[vert_index];
-    uint64_t parent = parents[vert_index];
-    uint64_t parent_index = get_value(g->map, parent);
-    if (parent_index >= g->n_local) {
-      add_vid_to_send(&tq, q, parent_index, vert);
-    }
+
+
+
+  // do full boundary exchange of parents data
+
+  thread_comm_t tc;
+  init_thread_comm(&tc);
+  
+#pragma omp for
+  for (uint64_t i = 0; i < g->n_local; ++i)
+  {
+    add_vid_to_send(&tq, q, i);
+    add_vid_to_queue(&tq, q, i);
   }
 
-  empty_queue(&tq, q);
   empty_send(&tq, q);
+  empty_queue(&tq, q);
+#pragma omp barrier
+
+  for (int32_t i = 0; i < nprocs; ++i)
+      tc.sendcounts_thread[i] = 0;
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; ++i)
+  {
+    uint64_t vert_index = q->queue_send[i];
+    update_sendcounts_thread(g, &tc, vert_index);
+  }
+
+  for (int32_t i = 0; i < nprocs; ++i)
+  {
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
 #pragma omp barrier
 
 #pragma omp single
 {
-  exchange_verts_bicc(g, comm, q);
+  init_sendbuf_vid_data(comm);    
 }
 
-#pragma omp for
-  for (uint64_t i = 0; i < q->queue_size; i += 2) {
-    uint64_t parent = q->queue[i];
-    uint64_t child = q->queue[i+1];
-    uint64_t child_index = get_value(g->map, child);
-    parents[child_index] = parent;
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; ++i)
+  {
+    uint64_t vert_index = q->queue_send[i];
+    update_vid_data_queues(g, &tc, comm,
+                           vert_index, parents[vert_index]);
   }
+
+  empty_vid_data(&tc, comm);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_vert_data(g, comm, q);
+} // end single
+
+#pragma omp for
+  for (uint64_t i = 0; i < comm->total_recv; ++i)
+  {
+    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
+    parents[index] = comm->recvbuf_data[i];
+  }
+
+#pragma omp single
+{
+  clear_recvbuf_vid_data(comm);
+}
+
+  clear_thread_comm(&tc);
+
+
+// #pragma omp for nowait
+//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+//     uint64_t vert = g->local_unmap[vert_index];
+//     uint64_t parent = parents[vert_index];
+//     uint64_t parent_index = get_value(g->map, parent);
+    
+//     if (parent_index >= g->n_local) {
+//       //printf("woo %lu %lu\n", parent_index, vert);
+//       add_vid_to_send(&tq, q, parent_index, vert);
+//     }
+//   }
+  
+//   empty_queue(&tq, q);
+//   empty_send(&tq, q);
+// #pragma omp barrier
+
+// #pragma omp single
+// {
+//   //printf("%lu WOO \n", q->queue_next);
+//   exchange_verts_bicc(g, comm, q);
+// }
+
+// #pragma omp for
+//   for (uint64_t i = 0; i < q->queue_size; i += 2) {
+//     uint64_t parent = q->queue[i];
+//     uint64_t child = q->queue[i+1];
+//     uint64_t child_index = get_value(g->map, child);
+//     parents[child_index] = parent;
+//     assert(child_index >= g->n_local);
+//     //printf("WOO %lu %lu\n", parent, child);
+//   }
+
+// #pragma omp for
+//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+//     uint64_t out_degree = out_degree(g, vert_index);
+//     uint64_t* outs = out_vertices(g, vert_index);
+//     for (uint64_t j = 0; j < out_degree; ++j) {
+//       if (outs[j] >= g->n_local)
+//         assert(parents[outs[j]] < VISITED);
+//     }
+//   }
+
 
   clear_thread_queue(&tq);
 } // end parallel
@@ -780,9 +874,15 @@ bool edge_is_owned(dist_graph_t* g, uint64_t curr_vtx, uint64_t nbor){
   }
   
   if((curr_is_owned && curr_vtx_GID > nbor_GID) || (nbor_is_owned && nbor_GID > curr_vtx_GID)){
+    /*if((curr_vtx_GID == 24574 || curr_vtx_GID == 0 || curr_vtx_GID == 8208 ) && (nbor_GID == 0 || nbor_GID == 8208 || nbor_GID == 24574)){
+      std::cout<<"curr_vtx_GID = "<<curr_vtx_GID<<" nbor_GID = "<<nbor_GID<<" is owned by this process\n";
+    }*/
     return true;
   }
 
+  /*if((curr_vtx_GID == 24574 || nbor_GID == 24574) && (curr_vtx_GID == 0 || nbor_GID == 0 || curr_vtx_GID == 8208 || nbor_GID == 8202)){
+    std::cout<<"curr_vtx_GID = "<<curr_vtx_GID<<" nbor_GID = "<<nbor_GID<<" is NOT owned by this process\n";
+  }*/
   return false;
 }
 
@@ -791,7 +891,8 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   
   uint64_t n_edges = 0;
   std::cout<<"Calculating the number of edges in the aux graph\n";
-  uint64_t  edges_to_request = 0;
+  uint64_t edges_to_request = 0;
+  uint64_t edges_to_send = 0;
   uint64_t* request_edgelist = new uint64_t[g->m_local*2];
   uint32_t* procs_to_send = new uint32_t[g->m_local];
   int32_t* sendcounts = new int32_t[nprocs];
@@ -830,11 +931,19 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
           //add{{parents[v], v}, {parents[w], w}} as an edge
           if( edge_is_owned(g,v,get_value(g->map, parents[v]))/*edge {parents[v], v} is owned*/){
             n_edges++;
+            if(!edge_is_owned(g,get_value(g->map,parents[w]),w) && v < g->n_local && w < g->n_local){
+              //std::cout<<"need to send edge from "<<parents[w]<<" "<<w_global<<" to owning proc\n";
+              edges_to_send++;
+            }
           }
           if(get_value(g->map, parents[w]) < g->n_local || w < g->n_local){
             //if at least one is local, we have one edge guaranteed
             if( edge_is_owned(g,get_value(g->map,parents[w]), w) /*edge {parents[w], w} is owned*/){
               n_edges++;
+              if(!edge_is_owned(g,get_value(g->map,parents[v]),v) && v < g->n_local && w < g->n_local){
+                //std::cout<<"need to send edge from "<<parents[w]<<" "<<w_global<<" to owning proc\n";
+                edges_to_send++;
+              }
             }
           } else {
             //no edges are local, so we don't have the global ID for this aux endpoint.
@@ -862,6 +971,10 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
             
             if(edge_is_owned(g,v,w) /*edge {v, w} */ ){
               n_edges++;
+              if(!edge_is_owned(g,v,get_value(g->map,parents[v])) && v < g->n_local && w < g->n_local){
+                //std::cout<<"need to send edge from "<<g->local_unmap[v]<<" "<<parents[v]<<" to owning proc\n";
+                edges_to_send++;
+              }
             }
           }
         } else if (parents[v] == w_global){
@@ -887,6 +1000,10 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
             if(edge_is_owned(g,v,w)/* edge {w,v} is owned*/){
               n_edges++;
+              if(!edge_is_owned(g,get_value(g->map,parents[w]),w) && v < g->n_local && w < g->n_local){
+                //std::cout<<"need to send edge from "<<parents[w]<<" "<<w_global<<" to owning proc\n";
+                edges_to_send++;
+              }
             }
           }
         }
@@ -932,15 +1049,20 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       for(int j = g->out_degree_list[vert1_l]; j < g->out_degree_list[vert1_l+1]; j++){
         if(g->out_edges[j] == vert2_l){
           recvbuf[i+2] = g->edge_unmap[j];
+          break;
         }
       }
     } else {
       for(int j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
         if(g->out_edges[j] == vert1_l){
           recvbuf[i+2] = g->edge_unmap[j];
+          break;
         }
       }
     }
+    /*if(vert1_g == 8208 && vert2_g == 0){
+      std::cout<<"sending back Global Edge Index "<<recvbuf[i+2]<<" for edge between "<<vert1_g<<" and "<<vert2_g<<"\n";
+    }*/
   }
   //send back the data
   MPI_Alltoallv(recvbuf,recvcounts,rdispls,MPI_UINT64_T, sendbuf,sendcounts,sdispls,MPI_UINT64_T, MPI_COMM_WORLD);
@@ -953,22 +1075,29 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       uint64_t vert1_g = sendbuf[j];
       uint64_t vert2_g = sendbuf[j+1];
       uint64_t global_edge_index = sendbuf[j+2];
-      if(vert1_g == 4826 || vert1_g == 10600){
-        std::cout<<"vert1_g = "<<vert1_g<<" vert2_g = "<<vert2_g<<" global_edge_index = "<<global_edge_index<<" owner = "<<i<<"\n";
-      }
       remote_global_edge_indices[std::make_pair(vert1_g,vert2_g)] = global_edge_index;
       remote_global_edge_indices[std::make_pair(vert2_g,vert1_g)] = global_edge_index;
       remote_global_edge_owners[global_edge_index] = i;
+      //if(global_edge_index == 2 || (vert1_g == 8208 && vert2_g == 0)) std::cout<<"Task "<<procid<<": received global edge "<<global_edge_index<<" from process "<<i<<"\n";
+
     }
   }
 
   uint64_t* srcs = (uint64_t*)malloc(n_edges*2*sizeof(uint64_t));//new uint64_t[n_edges*2];
+  uint64_t* ghost_edges_to_send = (uint64_t*)malloc(edges_to_send*2*sizeof(uint64_t));
+  int* ghost_procs_to_send = (int*) malloc(edges_to_send*sizeof(int));
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
   for(uint64_t i = 0; i < n_edges*2; i++){
     srcs[i] = 0;
   }
+  for(uint64_t i = 0; i < edges_to_send; i++){
+    ghost_edges_to_send[i*2] = 0;
+    ghost_edges_to_send[i*2+1] = 0;
+    ghost_procs_to_send[i] = 0;
+  }
   uint64_t srcIdx = 0;
+  uint64_t ghost_edge_idx = 0;
   uint64_t max_edge_GID = 0;
   std::cout<<"Creating srcs and dsts arrays, "<<n_edges<<" edges to be created\n";
   //self edges
@@ -1015,6 +1144,9 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               break;
             }
           }
+          int edge_GID_1_owner = -1;
+          if(!edge_is_owned(g,get_value(g->map,parents[v]),v)) edge_GID_1_owner = g->ghost_tasks[get_value(g->map,parents[v])-g->n_local];
+          else edge_GID_1_owner = procid;
             //add {{parents[v], v}, {parents[w], w}}
           int edge_GID_2_owner = -1;
           if(get_value(g->map, parents[w]) < g->n_local){
@@ -1040,17 +1172,31 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
           } else {
             std::pair<uint64_t, uint64_t> edge = std::make_pair(parents[w],w_global);
             edge_GID_2 = remote_global_edge_indices.at(edge);
+            if((g->local_unmap[v] == 24574 && w_global == 8208) ||(g->local_unmap[v] == 8208 && w_global == 24574)){
+              std::cout<<"****************Looking up remote edge\n";
+            }
             edge_GID_2_owner = remote_global_edge_owners.at(edge_GID_2);
           }
           if(edge_is_owned(g,get_value(g->map,parents[v]),v)/* edge {parents[v], v} is owned*/){
 
+            if((g->local_unmap[v] == 24574 && w_global == 8208) ||(g->local_unmap[v] == 8208 && w_global == 24574)){
+              std::cout<<"***************Adding edge from GID "<<edge_GID_1<<" to GID "<<edge_GID_2<<"\n";
+            }
             //add edge, because this one is owned
             srcs[srcIdx++] = edge_GID_1;
             srcs[srcIdx++] = edge_GID_2;
             if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
             if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
+            if(!edge_is_owned(g,w_parent_lid,w) && v < g->n_local && w < g->n_local){
+              if(edge_GID_2 == 440888 && edge_GID_1 == 365956){
+                std::cout<<"sending aux edge "<<edge_GID_2<<" "<<edge_GID_1<<" to process "<<edge_GID_2_owner<<"\n";
+              }
+              ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_2_owner;
+              ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
+              ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
+            }
           } else {
-            remote_global_edge_owners[edge_GID_1] = g->ghost_tasks[get_value(g->map,parents[v])-g->n_local];
+            //remote_global_edge_owners[edge_GID_1] = g->ghost_tasks[get_value(g->map,parents[v])-g->n_local];
           }
           if(w_parent_lid < g->n_local || w < g->n_local){
             if(edge_is_owned(g,w_parent_lid, w)/* edge {parents[w], w} is owned*/){
@@ -1058,8 +1204,16 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               srcs[srcIdx++] = edge_GID_1;
               if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
               if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
+              if(!edge_is_owned(g,get_value(g->map,parents[v]),v) && v < g->n_local && w < g->n_local){
+                if(edge_GID_1 == 440888 && edge_GID_2 == 365956){
+                  std::cout<<"sending aux edge "<<edge_GID_1<<" "<<edge_GID_2<<" to process "<<edge_GID_1_owner<<"\n";
+                }
+                ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_1_owner;
+                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
+                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
+              }
             } else {
-              remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
+              //remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
             }
           }
         }
@@ -1091,7 +1245,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
               if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
             } else {
-              remote_global_edge_owners[edge_GID_1] = edge_GID_1_owner;
+              //remote_global_edge_owners[edge_GID_1] = edge_GID_1_owner;
             }
             if(edge_is_owned(g,v,w)/* {v, w} is owned*/){
               //add {{v,w}, {parents[v], v}}
@@ -1099,8 +1253,16 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               srcs[srcIdx++] = edge_GID_1;
               if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
               if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
+              if(!edge_is_owned(g,v,v_parent_lid) && v < g->n_local && w < g->n_local){
+                if(edge_GID_1 == 440888 && edge_GID_2 == 365956){
+                  std::cout<<"sending aux edge "<<edge_GID_1<<" "<<edge_GID_2<<" to process "<<edge_GID_1_owner<<"\n";
+                }
+                ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_1_owner;
+                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
+                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
+              }
             } else {
-              remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
+              //remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
             }
           }
         } else if (parents[v] == w_global){
@@ -1148,7 +1310,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
               if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
             } else {
-              remote_global_edge_owners[edge_GID_1] = edge_GID_1_owner;
+              //remote_global_edge_owners[edge_GID_1] = edge_GID_1_owner;
             }
 
             if(edge_is_owned(g,w,v)/*{w, v} is owned*/){
@@ -1157,8 +1319,17 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               srcs[srcIdx++] = edge_GID_1;
               if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
               if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
+              if(!edge_is_owned(g,w_parent_lid,w) && v < g->n_local && w < g->n_local){
+                if(edge_GID_1 == 440888 && edge_GID_2 == 365956){
+                  std::cout<<"sending aux edge "<<edge_GID_1<<" "<<edge_GID_2<<" to process "<<edge_GID_1_owner<<"\n";
+                }
+                ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_1_owner;
+                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
+                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
+              }
             } else {
-              remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
+              //if(edge_GID_2 == 140179) std::cout<<"setting remote_global_edge_owners["<<edge_GID_2<<"] = "<<edge_GID_2_owner<<"\n";
+              //remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
             }
           }
         }
@@ -1167,6 +1338,65 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   }
   std::cout<<"Finished populating srcs and dsts arrays:\n\t";
   
+  //ghost_edges_to_send are the edges that this process knows, but other processes need in order to construct a complete ghost layer.
+
+  int32_t* ghost_sendcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* ghost_recvcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* ghost_sdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* ghost_rdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* ghost_sdispls_cpy = (int32_t*)malloc(nprocs*sizeof(int32_t));
+
+  for(int i = 0; i < nprocs; i++){
+    ghost_sendcounts[i] = 0;
+    ghost_recvcounts[i] = 0;
+    ghost_sdispls[i] = 0;
+    ghost_rdispls[i] = 0;
+    ghost_sdispls_cpy[i] = 0;
+  }
+
+  for(int i = 0; i < edges_to_send; i++){
+    ghost_sendcounts[ghost_procs_to_send[i]]+=2;
+  }
+
+  MPI_Alltoall(ghost_sendcounts, 1, MPI_INT32_T, ghost_recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+
+  ghost_sdispls[0] = 0;
+  ghost_sdispls_cpy[0] = 0;
+  ghost_rdispls[0] = 0;
+  for(int32_t i = 1; i < nprocs; i++){
+    ghost_sdispls[i] = ghost_sdispls[i-1] + ghost_sendcounts[i-1];
+    ghost_rdispls[i] = ghost_rdispls[i-1] + ghost_recvcounts[i-1];
+    ghost_sdispls_cpy[i] = ghost_sdispls[i];
+  }
+
+  int32_t ghost_send_total = ghost_sdispls[nprocs-1] + ghost_sendcounts[nprocs-1];
+  int32_t ghost_recv_total = ghost_rdispls[nprocs-1] + ghost_recvcounts[nprocs-1];
+
+  //realloc more room on the end of the edgelist, so we can simply tack on the extra edges at the end of the edge list.
+  srcs = (uint64_t*) realloc(srcs,(n_edges*2+ghost_recv_total)*sizeof(uint64_t));
+  uint64_t* ghost_sendbuf = (uint64_t*) malloc((uint64_t)ghost_send_total*sizeof(uint64_t));
+  for(uint64_t i = 0; i < ghost_send_total; i+=2){
+    uint64_t vert1 = ghost_edges_to_send[i];
+    uint64_t vert2 = ghost_edges_to_send[i+1];
+    if(vert1 == 497433 || vert2 == 497433) std::cout<<"Sending edge "<<vert1<<" "<<vert2<<" to process "<<ghost_procs_to_send[i/2]<<"\n";
+    ghost_sendbuf[ghost_sdispls_cpy[ghost_procs_to_send[i/2]]++] = vert1;
+    ghost_sendbuf[ghost_sdispls_cpy[ghost_procs_to_send[i/2]]++] = vert2;
+  }
+  
+  MPI_Alltoallv(ghost_sendbuf, ghost_sendcounts, ghost_sdispls, MPI_UINT64_T,
+                srcs+n_edges*2, ghost_recvcounts, ghost_rdispls, MPI_UINT64_T, MPI_COMM_WORLD);
+  for(int i = 0; i < nprocs; i++){
+    for(int j = ghost_rdispls[i]; j < ghost_rdispls[i+1]; j+=2){
+      uint64_t idx = n_edges*2+j+1;
+      if(srcs[idx-1] == 497433) std::cout<<"****** received aux vertex 497433 as a source, but it's not owned\n";
+      if(srcs[idx] == 497433) std::cout<<"******* received aux vertex 497433 as a dest\n";
+      if(remote_global_edge_owners.count(srcs[idx]) == 0){
+        remote_global_edge_owners[srcs[idx]] = i;
+      }
+    }
+  }
+  
+  n_edges += ghost_recv_total/2;
   /*for(int i = 0; i < srcIdx; i++){
     std::cout<<srcs[i]<<" ";
   }
@@ -1190,7 +1420,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   for(uint64_t i = 0; i < g->m_local; i++) temp_counts[i] = 0;
 
   //run through global IDs in the src position, map to global IDs, add to local_unmap, and update temp_counts
-  for(uint64_t i = 0; i < srcIdx; i+=2){
+  for(uint64_t i = 0; i < aux_g->m_local*2; i+=2){
     if(get_value(aux_g->map, srcs[i]) == NULL_KEY){
       aux_g->local_unmap[curr_lid] = srcs[i];
       temp_counts[curr_lid]++;
@@ -1219,6 +1449,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   for(uint64_t i = 0; i < aux_g->m_local*2; i+=2){
     uint64_t global_src = srcs[i];
     uint64_t global_dest = srcs[i+1];
+    if(global_src == 438 && global_dest == 2) std::cout<<"Task "<<procid<<": 438 neighbors 2***********************************\n";
     aux_g->out_edges[temp_counts[get_value(aux_g->map,global_src)]++] = global_dest;
   }
 
@@ -1235,17 +1466,17 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       
       uint64_t local_edge_index = get_value(g->edge_map, global_dest);
       if(local_edge_index != NULL_KEY){
+        
         aux_g->ghost_tasks[curr_lid-aux_g->n_local] = g->ghost_tasks[g->out_edges[local_edge_index]-g->n_local];
       } else {
         aux_g->ghost_tasks[curr_lid-aux_g->n_local] = remote_global_edge_owners.at(global_dest);
       }
-
+      /*if(global_dest == 2) std::cout<<"Task "<<procid<<" thinks global aux vertex "<<global_dest<<" is owned by process "<<aux_g->ghost_tasks[curr_lid-aux_g->n_local]<<"\n";*/
       aux_g->out_edges[i] = curr_lid++;
     } else {
       aux_g->out_edges[i] = val;
     }
   }
-
   /*for(uint64_t i = 0; i < aux_g->m_local*2; i+=2){
     uint64_t global_src = srcs[i];
     uint64_t global_dest = srcs[i+1];
@@ -1272,6 +1503,16 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   }*/
   aux_g->n_ghost = curr_lid - aux_g->n_local;
   aux_g->n_total = curr_lid;
+  /*for(uint64_t i = 0; i < aux_g->n_ghost; i++){
+    if(aux_g->ghost_unmap[i] == 4092) std::cout<<"Task "<<procid<<" has vertex "<<aux_g->ghost_unmap[i]<<" in ghost_unmap\n";
+  }*/
+  for(uint64_t i = 0; i < aux_g->n_local; i++){
+    if(aux_g->local_unmap[i] == 438){
+      for(int j = aux_g->out_degree_list[i]; j < aux_g->out_degree_list[i+1]; j++){
+          //std::cout<<"****Global vertex "<<aux_g->local_unmap[i]<<", local "<<i<<", has neighbor "<<aux_g->out_edges[j]<<"\n";
+      }
+    }
+  }
   /*for(uint64_t i = 0; i < aux_g->n_ghost; i++){
     std::cout<<"ghost vertex "<<i+aux_g->n_local<<" has global ID "<<aux_g->ghost_unmap[i]<<" and is owned by process "<<aux_g->ghost_tasks[i]<<"\n";
   }*/
@@ -1403,6 +1644,105 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       srcs[j] = i;
     }
   }
+  /*if(get_value(g->edge_map,2) != NULL_KEY){
+    std::cout<<"*******Global edge index 2 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,2)]];
+    if(g->out_edges[get_value(g->edge_map,2)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,2)]]<<"\n";
+    else std::cout<<" (g)"<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,2)]-g->n_local]<<"\n";
+    std::cout<<"global vertex 8208 neighbors: ";
+    for(int i = g->out_degree_list[get_value(g->map, 8208)]; i < g->out_degree_list[get_value(g->map,8208)+1]; i++){
+      if(g->out_edges[i] >= g->n_local && g->ghost_unmap[g->out_edges[i]-g->n_local] == 24574) 
+        std::cout<<g->ghost_unmap[g->out_edges[i]-g->n_local]<<"g, Global edge index is "<<g->edge_unmap[i]<<"\n";
+    }
+  }*/
+  
+
+  if(get_value(g->edge_map,365956) != NULL_KEY){
+    std::cout<<"*******Global edge index 365956 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,365956)]];
+    if(g->out_edges[get_value(g->edge_map,365956)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,365956)]]<<"\n";
+    else std::cout<<" (g)"<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,365956)]-g->n_local]<<"\n";
+  }
+  if(get_value(g->edge_map,440888) != NULL_KEY){
+    std::cout<<"*******Global edge index 440888 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,440888)]];
+    if(g->out_edges[get_value(g->edge_map,440888)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,440888)]]<<"\n";
+    else std::cout<<" (g)"<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,440888)]-g->n_local]<<"\n";
+  }
+  if(get_value(g->map, 48) != NULL_KEY){
+    uint64_t lid = get_value(g->map, 48);
+    for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
+      uint64_t nbor_lid = g->out_edges[i];
+      uint64_t nbor_gid = 0;
+      bool ghost = false;
+      if(nbor_lid < g->n_local) nbor_gid = g->local_unmap[nbor_lid];
+      else {
+        ghost = true;
+        nbor_gid = g->ghost_unmap[nbor_lid-g->n_local];
+      }
+      if(nbor_gid == 30716 || nbor_gid == 15551){
+        std::cout<<"vertex 48 neighbors "<<nbor_gid;
+        if(ghost) std::cout<<"g";
+        std::cout<<"\n";
+      }
+    }
+    lid = get_value(g->map, 15507);
+    for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
+      uint64_t nbor_lid = g->out_edges[i];
+      uint64_t nbor_gid = 0;
+      bool ghost = false;
+      if(nbor_lid < g->n_local) nbor_gid = g->local_unmap[nbor_lid];
+      else {
+        ghost = true;
+        nbor_gid = g->ghost_unmap[nbor_lid-g->n_local];
+      }
+      if(nbor_gid == 30716 || nbor_gid == 15551){
+        std::cout<<"vertex 15507 neighbors "<<nbor_gid;
+        if(ghost) std::cout<<"g";
+        std::cout<<"\n";
+      }
+    }
+    lid = get_value(g->map, 15551);
+    for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
+      uint64_t nbor_lid = g->out_edges[i];
+      uint64_t nbor_gid = 0;
+      bool ghost = false;
+      if(nbor_lid < g->n_local) nbor_gid = g->local_unmap[nbor_lid];
+      else {
+        ghost = true;
+        nbor_gid = g->ghost_unmap[nbor_lid-g->n_local];
+      }
+      if(nbor_gid == 15507|| nbor_gid == 48){
+        std::cout<<"vertex 15551 neighbors "<<nbor_gid;
+        if(ghost) std::cout<<"g";
+        std::cout<<"\n";
+      }
+    }
+  } else {
+    uint64_t lid = get_value(g->map, 30716);
+    for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
+      uint64_t nbor_lid = g->out_edges[i];
+      uint64_t nbor_gid = 0;
+      bool ghost = false;
+      if(nbor_lid < g->n_local) nbor_gid = g->local_unmap[nbor_lid];
+      else {
+        ghost = true;
+        nbor_gid = g->ghost_unmap[nbor_lid-g->n_local];
+      }
+      if(nbor_gid == 48 || nbor_gid == 15507){
+        std::cout<<"vertex 30716 neighbors "<<nbor_gid;
+        if(ghost) std::cout<<"g";
+        std::cout<<"\n";
+      }
+    }
+  }
+  /*if(get_value(g->edge_map,5459) != NULL_KEY){
+    std::cout<<"*******Global edge index 5459 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,5459)]];
+    if(g->out_edges[get_value(g->edge_map,5459)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,5459)]]<<"\n";
+    else std::cout<<" (g)"<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,5459)]-g->n_local]<<"\n";
+  }
+  if(get_value(g->edge_map,273436) != NULL_KEY){
+    std::cout<<"*******Global edge index 273436 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,273436)]];
+    if(g->out_edges[get_value(g->edge_map,273436)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,273436)]]<<"\n";
+    else std::cout<<" (g)"<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,273436)]-g->n_local]<<"\n";
+  }*/
   /*if(get_value(g->edge_map,97345) != NULL_KEY){
     std::cout<<"global edge index 97345 corresponds to local edge "<<get_value(g->edge_map,97345)<<", which has endpoints "
              <<srcs[get_value(g->edge_map,97345)]<<", "<<g->out_edges[get_value(g->edge_map,97345)]<<"\n";
@@ -1452,6 +1792,11 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     }
   }*/
   bicc_bfs(g, comm, parents, levels, g->max_degree_vert);
+  std::cout<<"********Parent of vertex 30716: "<<parents[get_value(g->map,30716)]<<" Parent of vertex 15551: "<<parents[get_value(g->map,15551)]<<"\n";
+  if(get_value(g->map,48) != NULL_KEY){
+    std::cout<<"********Parent of vertex 48: "<<parents[get_value(g->map,48)]<<" Parent of vertex 15507: "<<parents[get_value(g->map,15507)]<<"\n";
+  }
+ 
   
   MPI_Barrier(MPI_COMM_WORLD);
   
@@ -1542,6 +1887,15 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(int i = g->n_local; i < g->n_total; i++){
     printf("Rank %d: Vertex %d has a high of %d and a low of %d\n",procid,g->ghost_unmap[i-g->n_local],highs[i],lows[i]);  
   }*/
+  if(get_value(g->map, 0) < g->n_local) std::cout<<"vertex 0 has preorder label "<<preorder[get_value(g->map,0)]
+                                                 <<", low "<<lows[get_value(g->map,0)]<<", high "<<highs[get_value(g->map,0)]
+                                                 <<", n_desc "<<n_desc[get_value(g->map,0)]<<"\n";
+  if(get_value(g->map, 8208) < g->n_local) std::cout<<"vertex 8208 has preorder label "<<preorder[get_value(g->map,8208)]
+                                                    <<", low "<<lows[get_value(g->map,8208)]<<", high "<<highs[get_value(g->map,8208)]
+                                                    <<", n_desc "<<n_desc[get_value(g->map,8208)]<<"\n";
+  if(get_value(g->map, 24574) < g->n_local) std::cout<<"vertex 24574 has preorder label "<<preorder[get_value(g->map,24574)]
+                                                 <<", low "<<lows[get_value(g->map,24574)]<<", high "<<highs[get_value(g->map,24574)]
+                                                 <<", n_desc "<<n_desc[get_value(g->map,24574)]<<"\n";
   //4. create auxiliary graph.
   dist_graph_t* aux_g = new dist_graph_t;
   //std::map< std::pair<uint64_t, uint64_t> , uint64_t > edgeToAuxVert;
