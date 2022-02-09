@@ -1343,7 +1343,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   int32_t* ghost_sendcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
   int32_t* ghost_recvcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
   int32_t* ghost_sdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
-  int32_t* ghost_rdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* ghost_rdispls = (int32_t*)malloc((nprocs+1)*sizeof(int32_t));
   int32_t* ghost_sdispls_cpy = (int32_t*)malloc(nprocs*sizeof(int32_t));
 
   for(int i = 0; i < nprocs; i++){
@@ -1371,7 +1371,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
   int32_t ghost_send_total = ghost_sdispls[nprocs-1] + ghost_sendcounts[nprocs-1];
   int32_t ghost_recv_total = ghost_rdispls[nprocs-1] + ghost_recvcounts[nprocs-1];
-
+  ghost_rdispls[nprocs] = ghost_recv_total;
   //realloc more room on the end of the edgelist, so we can simply tack on the extra edges at the end of the edge list.
   srcs = (uint64_t*) realloc(srcs,(n_edges*2+ghost_recv_total)*sizeof(uint64_t));
   uint64_t* ghost_sendbuf = (uint64_t*) malloc((uint64_t)ghost_send_total*sizeof(uint64_t));
@@ -1656,7 +1656,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }*/
   
 
-  if(get_value(g->edge_map,365956) != NULL_KEY){
+  /*if(get_value(g->edge_map,365956) != NULL_KEY){
     std::cout<<"*******Global edge index 365956 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,365956)]];
     if(g->out_edges[get_value(g->edge_map,365956)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,365956)]]<<"\n";
     else std::cout<<" (g)"<<g->ghost_unmap[g->out_edges[get_value(g->edge_map,365956)]-g->n_local]<<"\n";
@@ -1683,38 +1683,6 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
         std::cout<<"\n";
       }
     }
-    lid = get_value(g->map, 15507);
-    for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
-      uint64_t nbor_lid = g->out_edges[i];
-      uint64_t nbor_gid = 0;
-      bool ghost = false;
-      if(nbor_lid < g->n_local) nbor_gid = g->local_unmap[nbor_lid];
-      else {
-        ghost = true;
-        nbor_gid = g->ghost_unmap[nbor_lid-g->n_local];
-      }
-      if(nbor_gid == 30716 || nbor_gid == 15551){
-        std::cout<<"vertex 15507 neighbors "<<nbor_gid;
-        if(ghost) std::cout<<"g";
-        std::cout<<"\n";
-      }
-    }
-    lid = get_value(g->map, 15551);
-    for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
-      uint64_t nbor_lid = g->out_edges[i];
-      uint64_t nbor_gid = 0;
-      bool ghost = false;
-      if(nbor_lid < g->n_local) nbor_gid = g->local_unmap[nbor_lid];
-      else {
-        ghost = true;
-        nbor_gid = g->ghost_unmap[nbor_lid-g->n_local];
-      }
-      if(nbor_gid == 15507|| nbor_gid == 48){
-        std::cout<<"vertex 15551 neighbors "<<nbor_gid;
-        if(ghost) std::cout<<"g";
-        std::cout<<"\n";
-      }
-    }
   } else {
     uint64_t lid = get_value(g->map, 30716);
     for(uint64_t i = g->out_degree_list[lid]; i < g->out_degree_list[lid+1]; i++){
@@ -1732,7 +1700,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
         std::cout<<"\n";
       }
     }
-  }
+  }*/
   /*if(get_value(g->edge_map,5459) != NULL_KEY){
     std::cout<<"*******Global edge index 5459 corresponds to global endpoints "<<g->local_unmap[srcs[get_value(g->edge_map,5459)]];
     if(g->out_edges[get_value(g->edge_map,5459)] < g->n_local) std::cout<<" "<<g->local_unmap[g->out_edges[get_value(g->edge_map,5459)]]<<"\n";
@@ -1792,10 +1760,6 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
     }
   }*/
   bicc_bfs(g, comm, parents, levels, g->max_degree_vert);
-  std::cout<<"********Parent of vertex 30716: "<<parents[get_value(g->map,30716)]<<" Parent of vertex 15551: "<<parents[get_value(g->map,15551)]<<"\n";
-  if(get_value(g->map,48) != NULL_KEY){
-    std::cout<<"********Parent of vertex 48: "<<parents[get_value(g->map,48)]<<" Parent of vertex 15507: "<<parents[get_value(g->map,15507)]<<"\n";
-  }
  
   
   MPI_Barrier(MPI_COMM_WORLD);
