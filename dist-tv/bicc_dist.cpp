@@ -926,87 +926,59 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       uint64_t w_global = 0;
       if(w<g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
+
+      bool aux_endpoint_1_owned = true;
+      bool aux_endpoint_2_owned = true;
+      bool will_add_aux = false;
+      uint64_t v_parent_lid = get_value(g->map, parents[v]);
+      uint64_t w_parent_lid = get_value(g->map, parents[w]);
+
       if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
         if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
-          //add{{parents[v], v}, {parents[w], w}} as an edge
-          if( edge_is_owned(g,v,get_value(g->map, parents[v]))/*edge {parents[v], v} is owned*/){
-            n_edges++;
-            if(!edge_is_owned(g,get_value(g->map,parents[w]),w) && v < g->n_local && w < g->n_local){
-              //std::cout<<"need to send edge from "<<parents[w]<<" "<<w_global<<" to owning proc\n";
-              edges_to_send++;
-            }
-          }
-          if(get_value(g->map, parents[w]) < g->n_local || w < g->n_local){
-            //if at least one is local, we have one edge guaranteed
-            if( edge_is_owned(g,get_value(g->map,parents[w]), w) /*edge {parents[w], w} is owned*/){
-              n_edges++;
-              if(!edge_is_owned(g,get_value(g->map,parents[v]),v) && v < g->n_local && w < g->n_local){
-                //std::cout<<"need to send edge from "<<parents[w]<<" "<<w_global<<" to owning proc\n";
-                edges_to_send++;
-              }
-            }
-          } else {
-            //no edges are local, so we don't have the global ID for this aux endpoint.
-            //add this edge, {parents[w], w} to the list to request from the owner of w.
-            int owner = 0;
-            if(w >= g->n_local){
-              owner = g->ghost_tasks[w-g->n_local];
-            } else {
-              owner = g->ghost_tasks[get_value(g->map, parents[w])-g->n_local];
-            }
-            procs_to_send[edges_to_request/2] = owner;
+          //add{{parents[v], v}, {parents[w], w}} as an edge (w may be ghosted, so parents[w] may be remote)
+          will_add_aux = true;
+          aux_endpoint_1_owned = edge_is_owned(g,v,v_parent_lid);
+          aux_endpoint_2_owned = edge_is_owned(g,w,w_parent_lid);
+
+          //request w,parent[w] from owner of w, if w is not local, need GEI and owner of GEI
+          if(w >= g->n_local && w_parent_lid >= g->n_local){
+            int w_owner = g->ghost_tasks[w-g->n_local];
+            procs_to_send[edges_to_request/2] = w_owner;
             request_edgelist[edges_to_request++] = w_global;
             request_edgelist[edges_to_request++] = parents[w];
-            sendcounts[owner] += 3;
+            sendcounts[w_owner] += 4; //extra value for owner of GEI
           }
-          //add {{parents[v], v}, {parents[w], w}} (undirected edges)
         }
       } else{
         if(parents[w] == g->local_unmap[v]){
           if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
-            //add {{parents[v], v} , {v, w}} as an edge
-            if( edge_is_owned(g,v,get_value(g->map, parents[v]))/*edge {parents[v], v}*/ ){
-              n_edges++;
-            }
-            
-            if(edge_is_owned(g,v,w) /*edge {v, w} */ ){
-              n_edges++;
-              if(!edge_is_owned(g,v,get_value(g->map,parents[v])) && v < g->n_local && w < g->n_local){
-                //std::cout<<"need to send edge from "<<g->local_unmap[v]<<" "<<parents[v]<<" to owning proc\n";
-                edges_to_send++;
-              }
-            }
+            //add{{parents[v],v},{v,w}} as an edge (endpoints guaranteed to exist, so all GEIs will be local)
+            will_add_aux = true;
+            aux_endpoint_1_owned = edge_is_owned(g,v,v_parent_lid);
+            aux_endpoint_2_owned = edge_is_owned(g,v,w);
           }
         } else if (parents[v] == w_global){
           if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
-            //add {{parents[w], w}, {w, v}} as an edge
-            if(get_value(g->map, parents[w]) < g->n_local || w < g->n_local){
-              if(edge_is_owned(g,get_value(g->map, parents[w]),w)/* edge {parents[w], w} is owned*/){
-                n_edges++;
-              }
-            } else {
-              // ask for the edge {parents[w], w}, from the owner of w.
-              int owner = 0; 
-              if(w >= g->n_local){
-                owner = g->ghost_tasks[w-g->n_local];
-              } else {
-                owner = g->ghost_tasks[get_value(g->map, parents[w])-g->n_local];
-              }
-              procs_to_send[edges_to_request/2] = owner;
+            //add {{parents[w], w}, {w, v}} as an edge (w may be ghosted, so parents[w] may be remote)
+            will_add_aux = true;
+            aux_endpoint_1_owned = edge_is_owned(g,w,w_parent_lid);
+            aux_endpoint_2_owned = edge_is_owned(g,v,w);
+
+            //request w, parents[w] from owner of w, if not local, need GEI and owner of GEI
+            if(w >= g->n_local && w_parent_lid >= g->n_local){
+              int w_owner = g->ghost_tasks[w-g->n_local];
+              procs_to_send[edges_to_request/2] = w_owner;
               request_edgelist[edges_to_request++] = w_global;
               request_edgelist[edges_to_request++] = parents[w];
-              sendcounts[owner] += 3;
-            }
-
-            if(edge_is_owned(g,v,w)/* edge {w,v} is owned*/){
-              n_edges++;
-              if(!edge_is_owned(g,get_value(g->map,parents[w]),w) && v < g->n_local && w < g->n_local){
-                //std::cout<<"need to send edge from "<<parents[w]<<" "<<w_global<<" to owning proc\n";
-                edges_to_send++;
-              }
+              sendcounts[w_owner] += 4; //extra value for owner of GEI
             }
           }
         }
+      }
+      //see if the endpoints are local or nah
+      if(will_add_aux){
+        n_edges += aux_endpoint_1_owned + aux_endpoint_2_owned;
+        edges_to_send += !aux_endpoint_1_owned + !aux_endpoint_2_owned;
       }
     }
   }
@@ -1037,18 +1009,23 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = request_edgelist[i];
     sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = request_edgelist[i+1];
     sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = 0;//this will be sent back with the GEI for the requested edge.
+    sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = 0;//this will be sent back with the owner of the requested GEI (not nec. the owner of w)
   }
   MPI_Alltoallv(sendbuf, sendcounts, sdispls,MPI_UINT64_T, recvbuf,recvcounts,rdispls,MPI_UINT64_T,MPI_COMM_WORLD);
 
-  for(int i = 0; i < recv_total; i+=3){
+  for(int i = 0; i < recv_total; i+=4){
     uint64_t vert1_g = recvbuf[i];
     uint64_t vert2_g = recvbuf[i+1];
     uint64_t vert1_l = get_value(g->map, vert1_g);
     uint64_t vert2_l = get_value(g->map, vert2_g);
+    bool owned = edge_is_owned(g,vert1_l,vert2_l);
     if(vert1_l < g->n_local){
       for(int j = g->out_degree_list[vert1_l]; j < g->out_degree_list[vert1_l+1]; j++){
         if(g->out_edges[j] == vert2_l){
           recvbuf[i+2] = g->edge_unmap[j];
+          //determine who owns this GEI
+          if(owned) recvbuf[i+3] = procid;
+          else recvbuf[i+3] = g->ghost_tasks[vert2_l-g->n_local];
           break;
         }
       }
@@ -1056,6 +1033,9 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       for(int j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
         if(g->out_edges[j] == vert1_l){
           recvbuf[i+2] = g->edge_unmap[j];
+          //determine who owns this GEI
+          if(owned) recvbuf[i+3] = procid;
+          else recvbuf[i+3] = g->ghost_tasks[vert1_l-g->n_local];
           break;
         }
       }
@@ -1071,13 +1051,14 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   std::unordered_map<uint64_t, uint64_t> remote_global_edge_owners;
 
   for(int i = 0; i < nprocs; i++){
-    for(int j = sdispls[i]; j < sdispls[i+1]; j+=3){
+    for(int j = sdispls[i]; j < sdispls[i+1]; j+=4){
       uint64_t vert1_g = sendbuf[j];
       uint64_t vert2_g = sendbuf[j+1];
       uint64_t global_edge_index = sendbuf[j+2];
+      uint64_t global_edge_owner = sendbuf[j+3];
       remote_global_edge_indices[std::make_pair(vert1_g,vert2_g)] = global_edge_index;
       remote_global_edge_indices[std::make_pair(vert2_g,vert1_g)] = global_edge_index;
-      remote_global_edge_owners[global_edge_index] = i;
+      remote_global_edge_owners[global_edge_index] = global_edge_owner;
       //if(global_edge_index == 2 || (vert1_g == 8208 && vert2_g == 0)) std::cout<<"Task "<<procid<<": received global edge "<<global_edge_index<<" from process "<<i<<"\n";
 
     }
@@ -1115,7 +1096,6 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
         if(edge_is_owned(g,v,w)/*edge {v,w} is owned*/){
           srcs[srcIdx++] = g->edge_unmap[w_idx];
           srcs[srcIdx++] = g->edge_unmap[w_idx];
-          if(g->edge_unmap[w_idx] > max_edge_GID) max_edge_GID = g->edge_unmap[w_idx];
         }
       }
     }
@@ -1132,206 +1112,156 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       uint64_t w_global = 0;
       if(w < g->n_local) w_global = g->local_unmap[w];
       else w_global = g->ghost_unmap[w-g->n_local];
+
+      bool will_add_aux = false;
+      uint64_t v_parent_lid = get_value(g->map, parents[v]);
+      uint64_t w_parent_lid = get_value(g->map, parents[w]); 
+      uint64_t aux_endpoint_1_gei = -1;
+      uint64_t aux_endpoint_2_gei = -1;
+      int aux_endpoint_1_owner = -1;
+      int aux_endpoint_2_owner = -1;
+
+
       if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
         if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
           //add {{parents[v], v}, {parents[w], w}} (undirected edges)
-          uint64_t w_parent_lid = get_value(g->map,parents[w]);
-          uint64_t edge_GID_1 = 0;
-          uint64_t edge_GID_2 = 0;
+          will_add_aux = true;
+          //find GEI of {parents[v],v} (looking up v will always have the edge, as v is owned locally)
           for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
             if(g->out_edges[e] == get_value(g->map,parents[v])){
-              edge_GID_1 = g->edge_unmap[e];
+              aux_endpoint_1_gei = g->edge_unmap[e];
               break;
             }
           }
-          int edge_GID_1_owner = -1;
-          if(!edge_is_owned(g,get_value(g->map,parents[v]),v)) edge_GID_1_owner = g->ghost_tasks[get_value(g->map,parents[v])-g->n_local];
-          else edge_GID_1_owner = procid;
-            //add {{parents[v], v}, {parents[w], w}}
-          int edge_GID_2_owner = -1;
-          if(get_value(g->map, parents[w]) < g->n_local){
+          //find owner of {parents[v],v} (if parents[v] is ghost, either this process or parents[v] owner owns this aux endpoint)
+          if(edge_is_owned(g,v,v_parent_lid)) aux_endpoint_1_owner = procid;
+          else aux_endpoint_1_owner = g->ghost_tasks[v_parent_lid-g->n_local];
+
+          //find GEI of {parents[w],w} (w could be local or ghosted, and parents[w] local, ghosted, or remote)
+          if(w_parent_lid < g->n_local){
             for(int e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
-              if(g->out_edges[e] == w) {
-                edge_GID_2 = g->edge_unmap[e];
+              if(g->out_edges[e] == w){
+                aux_endpoint_2_gei = g->edge_unmap[e];
                 break;
               }
             }
-            if(w != NULL_KEY && w >=g->n_local){
-              edge_GID_2_owner = g->ghost_tasks[w-g->n_local];
-            }
+            //aux_endpoint_2_owner is either this proc, or owner[w]
+            if(edge_is_owned(g,w,w_parent_lid)) aux_endpoint_2_owner = procid;
+            else aux_endpoint_2_owner = g->ghost_tasks[w-g->n_local];
+
           } else if(w < g->n_local && w_parent_lid != NULL_KEY){
             for(int e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
               if(g->out_edges[e] == w_parent_lid){
-                edge_GID_2 = g->edge_unmap[e];
+                aux_endpoint_2_gei = g->edge_unmap[e];
                 break;
               }
             }
-            if(w_parent_lid >=g->n_local){
-              edge_GID_2_owner = g->ghost_tasks[w_parent_lid - g->n_local];
-            }
+            //aux_endpoint_2_owner is either this proc, or owner[parent[w]]
+            if(edge_is_owned(g,w,w_parent_lid)) aux_endpoint_2_owner = procid;
+            else aux_endpoint_2_owner = g->ghost_tasks[w_parent_lid-g->n_local];
           } else {
+            //owner is given by remote_global_edge_owners, aux_endpoint_2_gei is given by remote_global_edge_indices
             std::pair<uint64_t, uint64_t> edge = std::make_pair(parents[w],w_global);
-            edge_GID_2 = remote_global_edge_indices.at(edge);
-            if((g->local_unmap[v] == 24574 && w_global == 8208) ||(g->local_unmap[v] == 8208 && w_global == 24574)){
-              std::cout<<"****************Looking up remote edge\n";
-            }
-            edge_GID_2_owner = remote_global_edge_owners.at(edge_GID_2);
+            aux_endpoint_2_gei = remote_global_edge_indices.at(edge);
+            aux_endpoint_2_owner = remote_global_edge_owners.at(aux_endpoint_2_gei);
           }
-          if(edge_is_owned(g,get_value(g->map,parents[v]),v)/* edge {parents[v], v} is owned*/){
 
-            if((g->local_unmap[v] == 24574 && w_global == 8208) ||(g->local_unmap[v] == 8208 && w_global == 24574)){
-              std::cout<<"***************Adding edge from GID "<<edge_GID_1<<" to GID "<<edge_GID_2<<"\n";
-            }
-            //add edge, because this one is owned
-            srcs[srcIdx++] = edge_GID_1;
-            srcs[srcIdx++] = edge_GID_2;
-            if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
-            if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
-            if(!edge_is_owned(g,w_parent_lid,w) && v < g->n_local && w < g->n_local){
-              if(edge_GID_2 == 440888 && edge_GID_1 == 365956){
-                std::cout<<"sending aux edge "<<edge_GID_2<<" "<<edge_GID_1<<" to process "<<edge_GID_2_owner<<"\n";
-              }
-              ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_2_owner;
-              ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
-              ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
-            }
-          } else {
-            //remote_global_edge_owners[edge_GID_1] = g->ghost_tasks[get_value(g->map,parents[v])-g->n_local];
-          }
-          if(w_parent_lid < g->n_local || w < g->n_local){
-            if(edge_is_owned(g,w_parent_lid, w)/* edge {parents[w], w} is owned*/){
-              srcs[srcIdx++] = edge_GID_2;
-              srcs[srcIdx++] = edge_GID_1;
-              if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
-              if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
-              if(!edge_is_owned(g,get_value(g->map,parents[v]),v) && v < g->n_local && w < g->n_local){
-                if(edge_GID_1 == 440888 && edge_GID_2 == 365956){
-                  std::cout<<"sending aux edge "<<edge_GID_1<<" "<<edge_GID_2<<" to process "<<edge_GID_1_owner<<"\n";
-                }
-                ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_1_owner;
-                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
-                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
-              }
-            } else {
-              //remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
-            }
-          }
         }
       } else{
         if(parents[w] == g->local_unmap[v]){
           if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
             //add {{parents[v], v} , {v, w}} as an edge
-            uint64_t v_parent_lid = get_value(g->map, parents[v]);
-            uint64_t edge_GID_1 = 0;
-            uint64_t edge_GID_2 = 0;
-            int edge_GID_1_owner = -1;
-            int edge_GID_2_owner = -1;
-            if(v_parent_lid >= g->n_local) edge_GID_1_owner = g->ghost_tasks[v_parent_lid-g->n_local];
-            if(w >= g->n_local) edge_GID_2_owner = g->ghost_tasks[w-g->n_local];
-
+            will_add_aux = true;
+            //find GEI of {parents[v],v} (looking up v will always have the edge, as v is owned locally)
             for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
               if(g->out_edges[e] == v_parent_lid){
-                edge_GID_1 = g->edge_unmap[e];
+                aux_endpoint_1_gei = g->edge_unmap[e];
+                break;
               }
+            }
+            //the aux endpoint is either owned by this proc or the owner of parents[v]
+            //(if the edge isn't owned here, parents[v] must be a ghost)
+            if(edge_is_owned(g,v,v_parent_lid)) aux_endpoint_1_owner = procid;
+            else aux_endpoint_1_owner = g->ghost_tasks[v_parent_lid-g->n_local];
+            
+            //find GEI of {w,v} (looking up v will always have the edge, v is owned locally)
+            for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
               if(g->out_edges[e] == w){
-                edge_GID_2 = g->edge_unmap[e];
+                aux_endpoint_2_gei = g->edge_unmap[e];
+                break;
               }
             }
-            if(edge_is_owned(g,v,v_parent_lid)/*{parents[v], v} is owned*/){
-              
-              //add {{parents[v], v}, {v,w}}
-              srcs[srcIdx++] = edge_GID_1;
-              srcs[srcIdx++] = edge_GID_2;
-              if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
-              if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
-            } else {
-              //remote_global_edge_owners[edge_GID_1] = edge_GID_1_owner;
-            }
-            if(edge_is_owned(g,v,w)/* {v, w} is owned*/){
-              //add {{v,w}, {parents[v], v}}
-              srcs[srcIdx++] = edge_GID_2;
-              srcs[srcIdx++] = edge_GID_1;
-              if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
-              if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
-              if(!edge_is_owned(g,v,v_parent_lid) && v < g->n_local && w < g->n_local){
-                if(edge_GID_1 == 440888 && edge_GID_2 == 365956){
-                  std::cout<<"sending aux edge "<<edge_GID_1<<" "<<edge_GID_2<<" to process "<<edge_GID_1_owner<<"\n";
-                }
-                ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_1_owner;
-                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
-                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
-              }
-            } else {
-              //remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
-            }
+            //edge is either owned by this process, or the owner of w.
+            if(edge_is_owned(g,v,w)) aux_endpoint_2_owner = procid;
+            else aux_endpoint_2_owner = g->ghost_tasks[w-g->n_local];
           }
         } else if (parents[v] == w_global){
           if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
             //add {{parents[w], w}, {w, v}} as an edge
-            uint64_t w_parent_lid = get_value(g->map, parents[w]);
-            uint64_t edge_GID_1 = 0;
-            uint64_t edge_GID_2 = 0;
-            int edge_GID_1_owner = -1;
-            int edge_GID_2_owner = -1;
-            if(w_parent_lid < g->n_local){
+            will_add_aux = true;
+
+            //find GEI for {parents[w], w} (w may be local or ghosted, parents[w] local, ghosted, or remote)
+            if(w_parent_lid < g->n_local){ //parents[w] is local, w ghosted or local
               for(int e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
                 if(g->out_edges[e] == w){
-                  edge_GID_1 = g->edge_unmap[e];
+                  aux_endpoint_1_gei = g->edge_unmap[e];
                   break;
                 }
               }
-              if(w >= g->n_local) edge_GID_1_owner = g->ghost_tasks[w-g->n_local];
-            } else if (w < g->n_local){
+              //aux_endpoint_1_owner is either this proc or owner[w]
+              if(edge_is_owned(g,w,w_parent_lid)) aux_endpoint_1_owner = procid;
+              else aux_endpoint_1_owner = g->ghost_tasks[w-g->n_local];
+
+            } else if(w < g->n_local && w_parent_lid != NULL_KEY){//w is local, parents[w] is ghosted
               for(int e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
                 if(g->out_edges[e] == w_parent_lid){
-                  edge_GID_1 = g->edge_unmap[e];
+                  aux_endpoint_1_gei = g->edge_unmap[e];
                   break;
                 }
               }
-              if(w_parent_lid >= g->n_local) edge_GID_1_owner = g->ghost_tasks[w_parent_lid-g->n_local];
-            } else {
-              std::pair<uint64_t, uint64_t> edge = std::make_pair(parents[w], w_global);
-              edge_GID_1 = remote_global_edge_indices.at(edge);
+              //edge is either owned by this process or owner of parents[w]
+              if(edge_is_owned(g,w,w_parent_lid)) aux_endpoint_1_owner = procid;
+              else aux_endpoint_1_owner = g->ghost_tasks[w_parent_lid-g->n_local];
+
+            } else {//both w and parents[w] are ghosted, or w is ghosted and parents[w] is remote
+              std::pair<uint64_t, uint64_t> edge = std::make_pair(parents[w],w_global);
+              aux_endpoint_1_gei = remote_global_edge_indices.at(edge);
+              aux_endpoint_1_owner = remote_global_edge_owners.at(aux_endpoint_1_gei);
             }
 
+            //find GEI for {w,v} (looking up v will always have the edge, v is owned locally)
             for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
               if(g->out_edges[e] == w){
-                edge_GID_2 = g->edge_unmap[e];
+                aux_endpoint_2_gei = g->edge_unmap[e];
                 break;
               }
             }
-            if(w >= g->n_local){
-              edge_GID_2_owner = g->ghost_tasks[w-g->n_local];
-            }
-            if(edge_is_owned(g,w_parent_lid, w)/*{parents[w], w} is owned*/){
-              //add {{parents[w], w}, {w, v}}
-              srcs[srcIdx++] = edge_GID_1;
-              srcs[srcIdx++] = edge_GID_2;
-              if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
-              if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
-            } else {
-              //remote_global_edge_owners[edge_GID_1] = edge_GID_1_owner;
-            }
-
-            if(edge_is_owned(g,w,v)/*{w, v} is owned*/){
-              //add {{w, v}, {parents[w], w}}
-              srcs[srcIdx++] = edge_GID_2;
-              srcs[srcIdx++] = edge_GID_1;
-              if(edge_GID_1 > max_edge_GID) max_edge_GID = edge_GID_1;
-              if(edge_GID_2 > max_edge_GID) max_edge_GID = edge_GID_2;
-              if(!edge_is_owned(g,w_parent_lid,w) && v < g->n_local && w < g->n_local){
-                if(edge_GID_1 == 440888 && edge_GID_2 == 365956){
-                  std::cout<<"sending aux edge "<<edge_GID_1<<" "<<edge_GID_2<<" to process "<<edge_GID_1_owner<<"\n";
-                }
-                ghost_procs_to_send[ghost_edge_idx/2] = edge_GID_1_owner;
-                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_1;
-                ghost_edges_to_send[ghost_edge_idx++] = edge_GID_2;
-              }
-            } else {
-              //if(edge_GID_2 == 140179) std::cout<<"setting remote_global_edge_owners["<<edge_GID_2<<"] = "<<edge_GID_2_owner<<"\n";
-              //remote_global_edge_owners[edge_GID_2] = edge_GID_2_owner;
-            }
+            //aux_endpoint_2_owner is either this proc or owner[w]
+            if(edge_is_owned(g,v,w)) aux_endpoint_2_owner = procid;
+            else aux_endpoint_2_owner = g->ghost_tasks[w-g->n_local];
           }
+        }
+      }
+
+      if(will_add_aux){
+        //an aux edge needs to be added from aux_endpoint_1_gei to aux_endpoint_2_gei.
+        //aux_endpoint_1_gei is owned by aux_endpoint_1_owner, aux_endpoint_2_gei is owned by aux_endpoint_2_owner
+        if(aux_endpoint_1_owner == procid){
+          srcs[srcIdx++] = aux_endpoint_1_gei;
+          srcs[srcIdx++] = aux_endpoint_2_gei;
+        } else {
+          ghost_procs_to_send[ghost_edge_idx/2] = aux_endpoint_1_owner;
+          ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_1_gei;
+          ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_2_gei;
+        }
+        
+        if(aux_endpoint_2_owner == procid){
+          srcs[srcIdx++] = aux_endpoint_2_gei;
+          srcs[srcIdx++] = aux_endpoint_1_gei;
+        } else {
+          ghost_procs_to_send[ghost_edge_idx/2] = aux_endpoint_2_owner;
+          ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_2_gei;
+          ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_1_gei;
         }
       }
     }
