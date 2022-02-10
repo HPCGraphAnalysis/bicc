@@ -1067,6 +1067,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   uint64_t* srcs = (uint64_t*)malloc(n_edges*2*sizeof(uint64_t));//new uint64_t[n_edges*2];
   uint64_t* ghost_edges_to_send = (uint64_t*)malloc(edges_to_send*2*sizeof(uint64_t));
   int* ghost_procs_to_send = (int*) malloc(edges_to_send*sizeof(int));
+  int* remote_endpoint_owners= (int*) malloc(edges_to_send*sizeof(int));
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
   for(uint64_t i = 0; i < n_edges*2; i++){
@@ -1076,6 +1077,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     ghost_edges_to_send[i*2] = 0;
     ghost_edges_to_send[i*2+1] = 0;
     ghost_procs_to_send[i] = 0;
+    remote_endpoint_owners[i] = 0;
   }
   uint64_t srcIdx = 0;
   uint64_t ghost_edge_idx = 0;
@@ -1251,6 +1253,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
           srcs[srcIdx++] = aux_endpoint_2_gei;
         } else {
           ghost_procs_to_send[ghost_edge_idx/2] = aux_endpoint_1_owner;
+          remote_endpoint_owners[ghost_edge_idx/2] = aux_endpoint_2_owner;
           ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_1_gei;
           ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_2_gei;
         }
@@ -1260,6 +1263,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
           srcs[srcIdx++] = aux_endpoint_1_gei;
         } else {
           ghost_procs_to_send[ghost_edge_idx/2] = aux_endpoint_2_owner;
+          remote_endpoint_owners[ghost_edge_idx/2] = aux_endpoint_1_owner;
           ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_2_gei;
           ghost_edges_to_send[ghost_edge_idx++] = aux_endpoint_1_gei;
         }
@@ -1276,52 +1280,86 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   int32_t* ghost_rdispls = (int32_t*)malloc((nprocs+1)*sizeof(int32_t));
   int32_t* ghost_sdispls_cpy = (int32_t*)malloc(nprocs*sizeof(int32_t));
 
+  int32_t* remow_sendcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* remow_recvcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* remow_sdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* remow_rdispls = (int32_t*)malloc((nprocs+1)*sizeof(int32_t));
+  int32_t* remow_sdispls_cpy = (int32_t*)malloc(nprocs*sizeof(int32_t));
+
+
+
+
   for(int i = 0; i < nprocs; i++){
     ghost_sendcounts[i] = 0;
     ghost_recvcounts[i] = 0;
     ghost_sdispls[i] = 0;
     ghost_rdispls[i] = 0;
     ghost_sdispls_cpy[i] = 0;
+
+    remow_sendcounts[i] = 0;
+    remow_recvcounts[i] = 0;
+    remow_sdispls[i] = 0;
+    remow_rdispls[i] = 0;
+    remow_sdispls_cpy[i] = 0;
   }
 
   for(int i = 0; i < edges_to_send; i++){
     ghost_sendcounts[ghost_procs_to_send[i]]+=2;
+    remow_sendcounts[ghost_procs_to_send[i]]++;
   }
-
+  
   MPI_Alltoall(ghost_sendcounts, 1, MPI_INT32_T, ghost_recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+  MPI_Alltoall(remow_sendcounts, 1, MPI_INT32_T, remow_recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
 
   ghost_sdispls[0] = 0;
   ghost_sdispls_cpy[0] = 0;
   ghost_rdispls[0] = 0;
+  remow_sdispls[0] = 0;
+  remow_sdispls_cpy[0] = 0;
+  remow_rdispls[0] = 0;
   for(int32_t i = 1; i < nprocs; i++){
     ghost_sdispls[i] = ghost_sdispls[i-1] + ghost_sendcounts[i-1];
     ghost_rdispls[i] = ghost_rdispls[i-1] + ghost_recvcounts[i-1];
     ghost_sdispls_cpy[i] = ghost_sdispls[i];
+
+    remow_sdispls[i] = remow_sdispls[i-1] + remow_sendcounts[i-1];
+    remow_rdispls[i] = remow_rdispls[i-1] + remow_recvcounts[i-1];
+    remow_sdispls_cpy[i] = remow_sdispls[i];
   }
 
   int32_t ghost_send_total = ghost_sdispls[nprocs-1] + ghost_sendcounts[nprocs-1];
   int32_t ghost_recv_total = ghost_rdispls[nprocs-1] + ghost_recvcounts[nprocs-1];
+
+  int32_t remow_send_total = remow_sdispls[nprocs-1] + remow_sendcounts[nprocs-1];
+  int32_t remow_recv_total = remow_rdispls[nprocs-1] + remow_recvcounts[nprocs-1];
   ghost_rdispls[nprocs] = ghost_recv_total;
   //realloc more room on the end of the edgelist, so we can simply tack on the extra edges at the end of the edge list.
   srcs = (uint64_t*) realloc(srcs,(n_edges*2+ghost_recv_total)*sizeof(uint64_t));
   uint64_t* ghost_sendbuf = (uint64_t*) malloc((uint64_t)ghost_send_total*sizeof(uint64_t));
+  int * remote_endpoint_owner_sendbuf = (int*) malloc((uint64_t)remow_send_total*sizeof(int));
+  int * remote_endpoint_owner_recvbuf = (int*) malloc((uint64_t)remow_recv_total*sizeof(int));
+
   for(uint64_t i = 0; i < ghost_send_total; i+=2){
     uint64_t vert1 = ghost_edges_to_send[i];
     uint64_t vert2 = ghost_edges_to_send[i+1];
-    if(vert1 == 497433 || vert2 == 497433) std::cout<<"Sending edge "<<vert1<<" "<<vert2<<" to process "<<ghost_procs_to_send[i/2]<<"\n";
+    //if(vert1 == 497433 || vert2 == 497433) std::cout<<"Sending edge "<<vert1<<" "<<vert2<<" to process "<<ghost_procs_to_send[i/2]<<"\n";
     ghost_sendbuf[ghost_sdispls_cpy[ghost_procs_to_send[i/2]]++] = vert1;
     ghost_sendbuf[ghost_sdispls_cpy[ghost_procs_to_send[i/2]]++] = vert2;
   }
-  
+  for(uint64_t i = 0; i < remow_send_total; i++){
+    remote_endpoint_owner_sendbuf[remow_sdispls_cpy[ghost_procs_to_send[i]]++] = remote_endpoint_owners[i];
+  }
+  MPI_Alltoallv(remote_endpoint_owner_sendbuf, remow_sendcounts, remow_sdispls, MPI_INT,
+                remote_endpoint_owner_recvbuf, remow_recvcounts, remow_rdispls, MPI_INT, MPI_COMM_WORLD);
   MPI_Alltoallv(ghost_sendbuf, ghost_sendcounts, ghost_sdispls, MPI_UINT64_T,
                 srcs+n_edges*2, ghost_recvcounts, ghost_rdispls, MPI_UINT64_T, MPI_COMM_WORLD);
   for(int i = 0; i < nprocs; i++){
     for(int j = ghost_rdispls[i]; j < ghost_rdispls[i+1]; j+=2){
       uint64_t idx = n_edges*2+j+1;
-      if(srcs[idx-1] == 497433) std::cout<<"****** received aux vertex 497433 as a source, but it's not owned\n";
-      if(srcs[idx] == 497433) std::cout<<"******* received aux vertex 497433 as a dest\n";
+      /*if(srcs[idx-1] == 497433) std::cout<<"****** received aux vertex 497433 as a source, but it's not owned\n";
+      if(srcs[idx] == 497433) std::cout<<"******* received aux vertex 497433 as a dest\n";*/
       if(remote_global_edge_owners.count(srcs[idx]) == 0){
-        remote_global_edge_owners[srcs[idx]] = i;
+        remote_global_edge_owners[srcs[idx]] = remote_endpoint_owner_recvbuf[j/2]; 
       }
     }
   }
