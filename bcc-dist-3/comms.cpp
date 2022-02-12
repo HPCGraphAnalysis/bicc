@@ -59,7 +59,7 @@ void init_queue_data(dist_graph_t* g, queue_data_t* q)
 {  
   if (debug) { printf("Task %d init_queue_data() start\n", procid); }
 
-  uint64_t queue_size = (uint64_t)((double)g->n_total*1.5);
+  uint64_t queue_size = (uint64_t)((double)g->n_total*3.0);
   q->queue = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
   q->queue_next = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
   q->queue_send = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
