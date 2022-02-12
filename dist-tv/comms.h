@@ -651,7 +651,6 @@ inline void update_sendcounts_thread(dist_graph_t* g,
                                      thread_comm_t* tc, 
                                      uint64_t vert_index)
 { 
-  if(g->local_unmap[vert_index] == 365956) std::cout<<"***********update_sendcounts_thread: global vert 2 processing....\n";
   for (int32_t i = 0; i < nprocs; ++i)
     tc->v_to_rank[i] = false;
 
@@ -663,9 +662,6 @@ inline void update_sendcounts_thread(dist_graph_t* g,
     if (out_index >= g->n_local)
     {
       int32_t out_rank = g->ghost_tasks[out_index-g->n_local];
-      if(g->local_unmap[vert_index] == 365956)
-        std::cout<<"sending vertex "<<g->local_unmap[vert_index]<<" to "<<out_rank<<" because of vertex "<<g->ghost_unmap[out_index-g->n_local]<<"\n";
-      //if(out_rank <0 || out_rank >= nprocs) printf("out_rank is %d for global vertex %lu\n",out_rank,g->ghost_unmap[out_index-g->n_local]);
       if (!tc->v_to_rank[out_rank])
       {
         tc->v_to_rank[out_rank] = true;
