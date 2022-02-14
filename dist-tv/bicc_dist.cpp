@@ -63,6 +63,7 @@
 #include "dist_graph.h"
 //#include "bfs.h"
 #include "reduce_graph.h"
+#include "fast_ts_map.h"
 
 #define NOT_VISITED 18446744073709551615U
 #define VISITED 18446744073709551614U
@@ -896,94 +897,124 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   uint64_t* request_edgelist = new uint64_t[g->m_local*2];
   uint32_t* procs_to_send = new uint32_t[g->m_local];
   int32_t* sendcounts = new int32_t[nprocs];
+  uint64_t* owned_edge_thread_counts = new uint64_t[omp_get_max_threads()];
+  uint64_t* ghost_edge_thread_counts = new uint64_t[omp_get_max_threads()];
   for(int i = 0; i < nprocs; i++) sendcounts[i] = 0;
   //count self edges for each tree edge (maybe nontree edges are necessary as well, maybe not. We'll see).
-  for(uint64_t v = 0; v < g->n_local; v++){
-    std::unordered_set<uint64_t> nbors_visited;
-    for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
-      uint64_t w = g->out_edges[w_idx];
-      if(nbors_visited.count(w) >0) continue;
-      nbors_visited.insert(w);
-      uint64_t w_global = 0;
-      if(w<g->n_local) w_global = g->local_unmap[w];
-      else w_global = g->ghost_unmap[w-g->n_local];
-      if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
-        //add a self edge in srcs and dsts
-        if(edge_is_owned(g,v,w)){
-          n_edges++;
+  
+#pragma omp parallel reduction(+:n_edges,edges_to_send)
+  {
+    #pragma omp for schedule(static)
+    for(uint64_t v = 0; v < g->n_local; v++){
+      std::unordered_set<uint64_t> nbors_visited;
+      for(uint64_t w_idx = g->out_degree_list[v]; w_idx < g->out_degree_list[v+1]; w_idx++){
+        uint64_t w = g->out_edges[w_idx];
+        if(nbors_visited.count(w) >0) continue;
+        nbors_visited.insert(w);
+        uint64_t w_global = 0;
+        if(w<g->n_local) w_global = g->local_unmap[w];
+        else w_global = g->ghost_unmap[w-g->n_local];
+        if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
+          //add a self edge in srcs and dsts
+          if(edge_is_owned(g,v,w)){
+            n_edges++;
+          }
+          //n_dsts++;
         }
-        //n_dsts++;
       }
     }
-  }
-  //non self-edges
-  for(uint64_t v = 0; v < g->n_local; v++){
-    std::unordered_set<uint64_t> nbors_visited;
-    for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
-      uint64_t w = g->out_edges[j];
-      if(nbors_visited.count(w) > 0) continue;
-      nbors_visited.insert(w);
-      uint64_t w_global = 0;
-      if(w<g->n_local) w_global = g->local_unmap[w];
-      else w_global = g->ghost_unmap[w-g->n_local];
+    //non self-edges
+    #pragma omp for schedule(static)
+    for(uint64_t v = 0; v < g->n_local; v++){
+      std::unordered_set<uint64_t> nbors_visited;
+      for(uint64_t j = g->out_degree_list[v]; j < g->out_degree_list[v+1]; j++){
+        uint64_t w = g->out_edges[j];
+        if(nbors_visited.count(w) > 0) continue;
+        nbors_visited.insert(w);
+        uint64_t w_global = 0;
+        if(w<g->n_local) w_global = g->local_unmap[w];
+        else w_global = g->ghost_unmap[w-g->n_local];
 
-      bool aux_endpoint_1_owned = true;
-      bool aux_endpoint_2_owned = true;
-      bool will_add_aux = false;
-      uint64_t v_parent_lid = get_value(g->map, parents[v]);
-      uint64_t w_parent_lid = get_value(g->map, parents[w]);
+        bool aux_endpoint_1_owned = true;
+        bool aux_endpoint_2_owned = true;
+        bool will_add_aux = false;
+        uint64_t v_parent_lid = get_value(g->map, parents[v]);
+        uint64_t w_parent_lid = get_value(g->map, parents[w]);
 
-      if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
-        if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
-          //add{{parents[v], v}, {parents[w], w}} as an edge (w may be ghosted, so parents[w] may be remote)
-          will_add_aux = true;
-          aux_endpoint_1_owned = edge_is_owned(g,v,v_parent_lid);
-          aux_endpoint_2_owned = edge_is_owned(g,w,w_parent_lid);
-
-          //request w,parent[w] from owner of w, if w is not local, need GEI and owner of GEI
-          if(w >= g->n_local && w_parent_lid >= g->n_local){
-            int w_owner = g->ghost_tasks[w-g->n_local];
-            procs_to_send[edges_to_request/2] = w_owner;
-            request_edgelist[edges_to_request++] = w_global;
-            request_edgelist[edges_to_request++] = parents[w];
-            sendcounts[w_owner] += 4; //extra value for owner of GEI
-          }
-        }
-      } else{
-        if(parents[w] == g->local_unmap[v]){
-          if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
-            //add{{parents[v],v},{v,w}} as an edge (endpoints guaranteed to exist, so all GEIs will be local)
+        if(parents[w] != g->local_unmap[v] && parents[v] != w_global){ //nontree edge
+          if(preorder[v] + n_desc[v] <= preorder[w] || preorder[w] + n_desc[w] <= preorder[v]){
+            //add{{parents[v], v}, {parents[w], w}} as an edge (w may be ghosted, so parents[w] may be remote)
             will_add_aux = true;
             aux_endpoint_1_owned = edge_is_owned(g,v,v_parent_lid);
-            aux_endpoint_2_owned = edge_is_owned(g,v,w);
-          }
-        } else if (parents[v] == w_global){
-          if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
-            //add {{parents[w], w}, {w, v}} as an edge (w may be ghosted, so parents[w] may be remote)
-            will_add_aux = true;
-            aux_endpoint_1_owned = edge_is_owned(g,w,w_parent_lid);
-            aux_endpoint_2_owned = edge_is_owned(g,v,w);
+            aux_endpoint_2_owned = edge_is_owned(g,w,w_parent_lid);
 
-            //request w, parents[w] from owner of w, if not local, need GEI and owner of GEI
+            //request w,parent[w] from owner of w, if w is not local, need GEI and owner of GEI
             if(w >= g->n_local && w_parent_lid >= g->n_local){
               int w_owner = g->ghost_tasks[w-g->n_local];
-              procs_to_send[edges_to_request/2] = w_owner;
-              request_edgelist[edges_to_request++] = w_global;
-              request_edgelist[edges_to_request++] = parents[w];
-              sendcounts[w_owner] += 4; //extra value for owner of GEI
+              uint64_t edge_idx = 0;
+              #pragma omp atomic capture
+              {edge_idx = edges_to_request; edges_to_request += 2;}
+              procs_to_send[/*edges_to_request/2*/edge_idx/2] = w_owner;
+              request_edgelist[/*edges_to_request++*/edge_idx] = w_global;
+              request_edgelist[/*edges_to_request++*/edge_idx+1] = parents[w];
+              #pragma omp atomic
+              sendcounts[w_owner] += 4;
+              //sendcounts[w_owner] += 4; //extra value for owner of GEI
+            }
+          }
+        } else{
+          if(parents[w] == g->local_unmap[v]){
+            if(preorder[v] != 1 && (lows[w] < preorder[v] || highs[w] >= preorder[v] + n_desc[v])){
+              //add{{parents[v],v},{v,w}} as an edge (endpoints guaranteed to exist, so all GEIs will be local)
+              will_add_aux = true;
+              aux_endpoint_1_owned = edge_is_owned(g,v,v_parent_lid);
+              aux_endpoint_2_owned = edge_is_owned(g,v,w);
+            }
+          } else if (parents[v] == w_global){
+            if(preorder[w] != 1 && (lows[v] < preorder[w] || highs[v] >= preorder[w] + n_desc[w])){
+              //add {{parents[w], w}, {w, v}} as an edge (w may be ghosted, so parents[w] may be remote)
+              will_add_aux = true;
+              aux_endpoint_1_owned = edge_is_owned(g,w,w_parent_lid);
+              aux_endpoint_2_owned = edge_is_owned(g,v,w);
+
+              //request w, parents[w] from owner of w, if not local, need GEI and owner of GEI
+              if(w >= g->n_local && w_parent_lid >= g->n_local){
+                int w_owner = g->ghost_tasks[w-g->n_local];
+                uint64_t edge_idx = 0;
+                #pragma omp atomic capture
+                {edge_idx = edges_to_request; edges_to_request+=2;}
+                procs_to_send[/*edges_to_request/2*/edge_idx/2] = w_owner;
+                request_edgelist[/*edges_to_request++*/edge_idx] = w_global;
+                request_edgelist[/*edges_to_request++*/edge_idx+1] = parents[w];
+                #pragma omp atomic
+                sendcounts[w_owner] += 4;
+                //sendcounts[w_owner] += 4; //extra value for owner of GEI
+              }
             }
           }
         }
-      }
-      //see if the endpoints are local or nah
-      if(will_add_aux){
-        n_edges += aux_endpoint_1_owned + aux_endpoint_2_owned;
-        edges_to_send += !aux_endpoint_1_owned + !aux_endpoint_2_owned;
+        //see if the endpoints are local or nah
+        if(will_add_aux){
+          n_edges += aux_endpoint_1_owned + aux_endpoint_2_owned;
+          edges_to_send += !aux_endpoint_1_owned + !aux_endpoint_2_owned;
+        }
       }
     }
+    int tid = omp_get_thread_num();
+
+    owned_edge_thread_counts[tid] = n_edges;
+    ghost_edge_thread_counts[tid] = edges_to_send;
+  } 
+  
+  uint64_t* owned_edge_thread_offsets = new uint64_t[omp_get_max_threads()+1];
+  uint64_t* ghost_edge_thread_offsets = new uint64_t[omp_get_max_threads()+1];
+  owned_edge_thread_offsets[0] = 0;
+  ghost_edge_thread_offsets[0] = 0;
+  for(int i = 1; i < omp_get_max_threads()+1; i++){
+    owned_edge_thread_offsets[i] = owned_edge_thread_offsets[i-1] + owned_edge_thread_counts[i-1];
+    ghost_edge_thread_offsets[i] = ghost_edge_thread_offsets[i-1] + ghost_edge_thread_counts[i-1];
   }
-  
-  
+   
   int32_t* recvcounts = new int32_t[nprocs];
   //communicate sendcounts
   MPI_Alltoall(sendcounts, 1, MPI_INT32_T, recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
