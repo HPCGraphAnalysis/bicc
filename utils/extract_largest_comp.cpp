@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "fast_ts_map.cpp"
 
@@ -16,6 +17,87 @@ typedef struct {
 #define out_vertices(g, n) (&g.out_array[g.out_degree_list[n]])
 
 bool no_multiedges = true;
+
+void read_ebin(char* filename,
+ int& num_verts, unsigned& num_edges,
+ int*& srcs, int*& dsts)
+{
+  double elt = omp_get_wtime();
+  printf("Begin read_ebin()\n");
+  
+  num_verts = 0;
+#pragma omp parallel
+{
+  int nthreads = omp_get_num_threads();
+  int tid = omp_get_thread_num();
+
+  FILE *infp = fopen(filename, "rb");
+  if(infp == NULL) {
+    printf("%d - load_graph_edges() unable to open input file", tid);
+    exit(0);
+  }
+
+  fseek(infp, 0L, SEEK_END);
+  uint64_t file_size = ftell(infp);
+  fseek(infp, 0L, SEEK_SET);
+
+  uint64_t nedges_global = file_size/(2*sizeof(uint32_t));
+
+#pragma omp single
+{
+  num_edges = (unsigned)nedges_global;
+  srcs = new int[num_edges];
+  dsts = new int[num_edges];
+}
+
+  uint64_t read_offset_start = tid*2*sizeof(uint32_t)*(nedges_global/nthreads);
+  uint64_t read_offset_end = (tid+1)*2*sizeof(uint32_t)*(nedges_global/nthreads);
+
+  if (tid == nthreads - 1)
+    read_offset_end = 2*sizeof(uint32_t)*nedges_global;
+
+  uint64_t nedges = (read_offset_end - read_offset_start)/(2*sizeof(uint32_t));
+  uint32_t* edges_read = (uint32_t*)malloc(2*nedges*sizeof(uint32_t));
+  if (edges_read == NULL) {
+    printf("%d - load_graph_edges(), unable to allocate buffer", tid);
+    exit(0);
+  }
+
+  fseek(infp, read_offset_start, SEEK_SET);
+  fread(edges_read, nedges, 2*sizeof(uint32_t), infp);
+  fclose(infp);
+  printf(".");
+
+  uint64_t array_offset = (uint64_t)tid*(nedges_global/nthreads);
+  uint64_t counter = 0;
+  for (uint64_t i = 0; i < nedges; ++i) {
+    int src = (int)edges_read[counter++];
+    int dst = (int)edges_read[counter++];
+    srcs[array_offset+i] = src;
+    dsts[array_offset+i] = dst;
+  }
+
+  free(edges_read);
+  printf(".");
+
+#pragma omp barrier
+
+#pragma omp for reduction(max:num_verts)
+  for (uint64_t i = 0; i < nedges_global; ++i)
+    if (srcs[i] > num_verts)
+      num_verts = srcs[i];
+#pragma omp for reduction(max:num_verts)
+  for (uint64_t i = 0; i < nedges_global; ++i)
+    if (dsts[i] > num_verts)
+      num_verts = dsts[i]; 
+           
+} // end parallel
+
+  num_edges *= 2;
+  num_verts += 1;
+  printf("Done read_ebin(): %lf (s)\n", omp_get_wtime() - elt); 
+  printf("Read: n: %d, m: %u\n", num_verts, num_edges);
+}
 
 void read_edge(char* filename,
   int& n, unsigned& m,
@@ -64,6 +146,7 @@ void create_csr(int n, unsigned m,
   int* srcs, int* dsts,
   int*& out_array, unsigned*& out_degree_list)
 {
+  printf("Building csr ... \n");
   out_array = new int[m];
   out_degree_list = new unsigned[n+1];
   unsigned* temp_counts = new unsigned[n];
@@ -78,19 +161,25 @@ void create_csr(int n, unsigned m,
   for (int i = 0; i < n; ++i)
     temp_counts[i] = 0;
 
-  for (unsigned i = 0; i < m; ++i)
+  for (unsigned i = 0; i < m / 2; ++i) {
     ++temp_counts[srcs[i]];
+    ++temp_counts[dsts[i]];
+  }
   for (int i = 0; i < n; ++i)
     out_degree_list[i+1] = out_degree_list[i] + temp_counts[i];
   memcpy(temp_counts, out_degree_list, n*sizeof(int));
-  for (unsigned i = 0; i < m; ++i)
+  for (unsigned i = 0; i < m / 2; ++i) {
     out_array[temp_counts[srcs[i]]++] = dsts[i];
+    out_array[temp_counts[dsts[i]]++] = srcs[i];
+  }
   delete [] temp_counts;
+  printf("Done\n");
 }
 
 void get_largest_comp(graph g, int& new_n, int& new_m, 
   int*& new_srcs, int*& new_dsts)
 {
+  printf("Extracting comp ... \n");
   bool* visited = new bool[g.n];
   for (int i = 0; i < g.n; ++i)
     visited[i] = false;
@@ -155,7 +244,8 @@ void get_largest_comp(graph g, int& new_n, int& new_m,
         }
       }
     }
-  }  
+  }
+  printf("Done\n");
 }
 
 void write_edgelist(char* filename, int n, int m, int* srcs, int* dsts)
@@ -170,6 +260,25 @@ void write_edgelist(char* filename, int n, int m, int* srcs, int* dsts)
   return;
 }
 
+void write_ebin(char* filename, int n, int m, int* srcs, int* dsts)
+{
+  printf("Writing to %s ... \n", filename);
+  
+  FILE* outfile = fopen(filename, "wb");  
+  
+  for (int i = 0; i < m; ++i) {
+    uint32_t edge[2];
+    edge[0] = srcs[i];
+    edge[1] = dsts[i];
+    fwrite(edge, sizeof(uint32_t), 2, outfile);
+  }
+
+  fclose(outfile);
+
+  printf("done\n");
+  return;
+}
+
 int main(int argc, char* argv[])
 {
   int n;
@@ -179,7 +288,8 @@ int main(int argc, char* argv[])
   int* out_array;
   unsigned* out_degree_list;
   
-  read_edge(argv[1], n, m, srcs, dsts);
+  //read_edge(argv[1], n, m, srcs, dsts);
+  read_ebin(argv[1], n, m, srcs, dsts);
   create_csr(n, m, srcs, dsts, out_array, out_degree_list);
   graph g = {n, m, out_array, out_degree_list};
   
@@ -188,7 +298,8 @@ int main(int argc, char* argv[])
   int* new_srcs;
   int* new_dsts;
   get_largest_comp(g, new_n, new_m, new_srcs, new_dsts);
-  write_edgelist(argv[2], new_n, new_m, new_srcs, new_dsts);
+  //write_edgelist(argv[2], new_n, new_m, new_srcs, new_dsts);
+  write_ebin(argv[2], new_n, new_m, new_srcs, new_dsts);
   
   return 0;
 }
