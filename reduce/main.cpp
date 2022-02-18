@@ -52,9 +52,9 @@
 int procid, nprocs;
 bool verbose, debug, debug2, verify, output;
 
-#include "dist_graph.h"
+#include "../include/dist_graph.h"
+#include "../include/io_pp.h"
 #include "reduce_graph.h"
-#include "io_pp.h"
 
 
 int main(int argc, char **argv) 
@@ -79,7 +79,7 @@ int main(int argc, char **argv)
 
   char* input_filename = strdup(argv[1]);
   char* output_filename = strdup(argv[2]);
-  char* part_list = NULL;
+  int32_t* part_list = NULL;
 
   graph_gen_data_t* ggi = (graph_gen_data_t*)malloc(sizeof(graph_gen_data_t));
   dist_graph_t* g = (dist_graph_t*)malloc(sizeof(dist_graph_t));
@@ -105,9 +105,6 @@ int main(int argc, char **argv)
   dist_graph_t* g_new = reduce_graph(g, comm, q);
   output_graph(g_new, output_filename);
   
-  
-  
-
   clear_graph(g);
   clear_graph(g_new);
   clear_comm_data(comm);

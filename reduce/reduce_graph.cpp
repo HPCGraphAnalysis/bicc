@@ -6,12 +6,12 @@
 #include <stdint.h>
 #include <fstream>
 
-#include "dist_graph.h"
-#include "io_pp.h"
-#include "comms.h"
-#include "util.h"
+#include "../include/dist_graph.h"
+#include "../include/io_pp.h"
+#include "../include/comms.h"
+#include "../include/util.h"
+#include "../include/thread.h"
 #include "reduce_graph.h"
-#include "thread.h"
 
 dist_graph_t* reduce_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q)
 {
