@@ -497,127 +497,304 @@ void preorder_label_recursive(dist_graph_t* g,uint64_t* parents, uint64_t* preor
   }
 }
 
-extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* parents, uint64_t* n_descendants){
-  std::cout<<"Calculating Descendants for all "<<g->n<<" vertices\n";
-  for(int i = 0; i < g->n_total; i++) n_descendants[i] = NULL_KEY;
-  std::queue<uint64_t> primary_frontier;
-  std::queue<uint64_t> secondary_frontier;
-  std::queue<uint64_t>* currQueue = &primary_frontier;
-  std::queue<uint64_t>* otherQueue = &secondary_frontier;
-  for(int i = 0; i < g->n_local; i++){
-    primary_frontier.push(i);
-  }
-  int global_done = 0;
-  while (!global_done){
-    while(currQueue->size() > 0){
-      uint64_t currVert = currQueue->front();
-      //std::cout<<"Rank "<<procid<<" is processing vertex "<<g->local_unmap[currVert]<<"\n";
-      currQueue->pop();
-      if(n_descendants[currVert] != NULL_KEY) continue;
-      int out_degree = out_degree(g,currVert);
-      int children = 0;
-      int children_computed = 0;
-      uint64_t n_desc = 0;
-      uint64_t* outs = out_vertices(g, currVert);
-      std::unordered_set<uint64_t> visited_nbors;
-      for(int i = 0; i < out_degree; i++){
-        uint64_t nbor_local = outs[i];
-	if(visited_nbors.count(nbor_local) > 0) continue;
-        if(parents[nbor_local] == g->local_unmap[currVert]){
-          children++;
-          if(n_descendants[nbor_local] != NULL_KEY){
-            children_computed++;
-            n_desc+=n_descendants[nbor_local];
-          }
-        }
-	visited_nbors.insert(nbor_local);
-      }
-      if(children_computed == children){
-	/*if(currVert == 89194 || currVert == 471983) std::cout<<"Vertex "<<currVert<<" has "<<children<<"children and they have "<<n_desc<<" descedants, collectively\n";*/
-        n_descendants[currVert] = n_desc + children_computed;
-        //if(get_value(g->map, parents[currVert]) < g->n_local){
-        //  otherQueue->push(get_value(g->map, parents[currVert]));
-        //}
-      } else {
-        //std::cout<<"Rank "<<procid<<" was unable to compute n_desc for vertex "<<g->local_unmap[currVert]<<"\n";
-        otherQueue->push(currVert);
-      }
-    }
-    communicate_preorder_labels(g,*otherQueue, n_descendants, NULL_KEY);
-    int local_done = otherQueue->size();
-    MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-    global_done = !global_done;
-    std::swap(currQueue,otherQueue);
-    //printf("Rank %d currQueue size = %d, otherQueue size = %d\n",procid, currQueue->size(),otherQueue->size());
-  }
-  //std::set<uint64_t> unfinished;
-  //all leaves have 1 descendant    
-  /*for(uint64_t i = 0; i < g->n_total; i++){
-    if(is_leaf[i]) {
-      n_descendants[i] = 1;
-      //unfinished.insert(parents[i]);
-    } else {
-      n_descendants[i] = 0;
-    }
-  }
-  std::cout<<"\tDone with initialization\n";
-  //see if any leaves' parents can be calculated
-  uint64_t unfinished = g->n_total;
-  uint64_t last_unfinished = g->n_total+1;
-  int local_done = 0;
-  int global_done = 0;
-  while(!global_done){
-    //while local progress is being made
-    while (unfinished < last_unfinished){
-      last_unfinished = unfinished;
-      unfinished = 0;
-      for(int parent = 0; parent < g->n_local; parent++){
-        if(n_descendants[parent] !=0) continue;
-        std::cout<<"Rank "<<procid<<"\tchecking if vertex "<<parent<<" can be calculated\n"; 
-        //look at neighbors whose parent is *iter, if all > 0, we have a winner!
-        int out_degree = out_degree(g, parent);
-        int children = 0;
-        int children_computed = 0;
-        int n_desc = 1;
-        uint64_t* outs = out_vertices(g, parent);
-        for(int i = 0; i < out_degree; i++){
-          int nbor_local = outs[i];
-          //only descendants get counted
-          if(parents[nbor_local] == g->local_unmap[parent]){
-            children++;
-            if(n_descendants[nbor_local] > 0){
-              std::cout<<"\t\t"<<nbor_local<<" has "<<n_descendants[nbor_local]<<" descendants\n";
-              children_computed++;
-              n_desc += n_descendants[nbor_local];
-            } else {
-              std::cout<<"\t\t"<<nbor_local<<" has "<<n_descendants[nbor_local]<<" descendants\n";
-            }
-          }
-        }
-        if(children_computed == children){
-          std::cout<<"Successfully computed descendants, vertex "<<parent<<" has "<<n_desc<<" descendants\n";
-          n_descendants[parent] = n_desc;
-        } else {
-          unfinished++;
-        }
-        
-      }
-    
-    }
-    //all_reduce to check if everyone's done
-    local_done = last_unfinished == 0;
-    MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD); 
-    //if not done, ghost->owned->ghost exchanges (need to think more about what type of operation needs done with each)
-      //break;
-    owned_to_ghost_value_comm(g,comm,q,n_descendants);
-    
+extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, uint64_t* parents, uint64_t* n_desc){
+  queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));
+  init_queue_data(g,q);
+  q->queue_size = 0;
+  q->next_size = 0;
+  q->send_size = 0;
+  
+#pragma omp parallel default(shared)
+{
+  thread_queue_t tq; 
+  init_thread_queue(&tq);
 
+#pragma omp for
+  for(uint64_t i = 0; i < g->n_total; i++){
+    n_desc[i] = 1;
   }
-  return 0;*/
+
+
+  //leaves start it off, each sends a package with 1 to its parent in the BFS
+#pragma omp for schedule(guided)
+  for(uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index){
+    uint64_t vert = g->local_unmap[vert_index];
+    uint64_t out_degree = out_degree(g, vert_index);
+    uint64_t* outs = out_vertices(g, vert_index);
+    bool has_heir = false;
+    for(uint64_t j = 0; j < out_degree; ++j){
+      if( parents[outs[j]] == vert){
+        //THE LINE CONTINUES
+        has_heir = true;
+        break;
+      }
+    }
+
+    if(!has_heir){ 
+      uint64_t parent = parents[vert_index];
+      uint64_t parent_index = get_value(g->map, parent);
+      uint64_t parent_rank = NULL_KEY;
+      if(parent_index < g->n_local){
+        parent_rank = (uint64_t)procid;
+        add_vid_to_queue(&tq, q, /*queue[i]*/parent, /*queue[i+1]*/1);
+      } else {
+        parent_rank = g->ghost_tasks[parent_index - g->n_local];
+        add_vid_to_send(&tq, q, parent_index, 1);
+      }
+    }
+  }
+
+  comm->global_queue_size = 1;
+  //next, we process packages locally, and send those that need sent
+  while(comm->global_queue_size){
+    
+#pragma omp for schedule(guided) nowait
+    for (uint64_t i = 0; i < q->queue_size; i+= 2){
+      uint64_t vert = q->queue[i];
+      uint64_t count = q->queue[i+1];
+      uint64_t vert_index = get_value(g->map, vert);
+
+      //the queue can have multiple packages dealing with a single vertex (multiple children, same parent)
+      //so guard reads/writes to any parent data (n_desc), but safe to modify package data (count).
+      uint64_t desc = 0;
+      #pragma omp atomic capture
+      {desc = n_desc[vert_index]; n_desc[vert_index] += count;}
+      
+      //no branching = speed
+      count += (desc == 1);
+
+      uint64_t parent = parents[vert_index];
+      //to avoid infinitely many descendants at the root
+      if( parent != vert){
+        uint64_t parent_index = get_value(g->map, parent);
+        if(parent_index < g->n_local){
+          add_vid_to_queue(&tq, q, parent, count);
+        } else {
+          add_vid_to_send(&tq, q, parent_index, count);
+        }
+      }
+    }
+    
+    empty_queue(&tq, q);
+    empty_send(&tq, q);
+#pragma omp barrier
+
+#pragma omp single
+    {
+      exchange_verts_bicc(g, comm, q);
+    }
+  } //end while
+
+  // do full boundary exchange of n_desc data
+
+  thread_comm_t tc;
+  init_thread_comm(&tc);
+
+#pragma omp for
+  for(uint64_t i = 0; i < g->n_local; i++){
+    add_vid_to_send(&tq, q, i);
+    add_vid_to_queue(&tq, q, i);
+  }
+
+  empty_send(&tq, q);
+  empty_queue(&tq, q);
+#pragma omp barrier
+
+  for(int32_t i = 0; i < nprocs; ++i){
+    tc.sendcounts_thread[i] = 0;
+  }
+
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; i++){
+    uint64_t vert_index = q->queue_send[i];
+    update_sendcounts_thread(g, &tc, vert_index);
+  }
+
+  for (int32_t i = 0; i < nprocs; i++){
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
+#pragma omp barrier
+
+#pragma omp single
+{
+  init_sendbuf_vid_data(comm);
 }
 
-void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint64_t* levels,  uint64_t* parents, uint64_t* n_desc, uint64_t* preorder){
-  std::cout<<"\tCalculating Preorder Labels\n";
+#pragma omp for schedule(guided) nowait
+  for (uint64_t i = 0; i < q->send_size; i++){
+    uint64_t vert_index = q->queue_send[i];
+    update_vid_data_queues(g, &tc, comm, vert_index, n_desc[vert_index]);
+  }
+  
+  empty_vid_data(&tc, comm);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_vert_data(g, comm, q);
+}
+
+
+#pragma omp for
+  for (uint64_t i = 0; i < comm->total_recv; i++){
+    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
+    n_desc[index] = comm->recvbuf_data[i];
+  }
+
+#pragma omp single
+{
+  clear_recvbuf_vid_data(comm);
+}
+
+  clear_thread_comm(&tc);
+  clear_thread_queue(&tq);
+} // end parallel
+
+  clear_queue_data(q);
+  free(q);  
+}
+
+void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, uint64_t root,  uint64_t* parents, uint64_t* n_desc, uint64_t* preorder){
+
+  queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));
+  init_queue_data(g, q);
+
+  q->queue_size = 0;
+  q->next_size = 0;
+  q->send_size = 0;
+
+
+  uint64_t root_index = get_value(g->map, root);
+  if(root_index != NULL_KEY && root_index < g->n_local){
+    q->queue[0] = root;
+    q->queue[1] = 1;
+    q->queue_size = 2;
+  }
+
+  comm->global_queue_size = 1;
+#pragma omp parallel default(shared)
+{
+  thread_queue_t tq;
+  init_thread_queue(&tq);
+
+  while(comm->global_queue_size){
+    
+#pragma omp for schedule(guided) nowait
+    for(uint64_t i = 0; i < q->queue_size; i+= 2){
+      uint64_t vert = q->queue[i];
+      uint64_t preorder_label = q->queue[i+1];
+      uint64_t vert_index = get_value(g->map, vert);
+
+      //ghost copies can cause multiple competing writes, should guard just to be sure.
+#pragma omp atomic write
+      preorder[vert_index] = preorder_label;
+
+
+      if(vert_index < g->n_local){
+        uint64_t child_label = preorder[vert_index]+1;
+        uint64_t out_degree = out_degree(g, vert_index);
+        uint64_t* outs = out_vertices(g, vert_index);
+        for(uint64_t j = 0; j  < out_degree; j++){
+          uint64_t nbor = outs[j];
+          uint64_t nbor_gid = 0;
+          if(nbor < g->n_local) nbor_gid = g->local_unmap[nbor];
+          else nbor_gid = g->ghost_unmap[nbor-g->n_local];
+
+          if(parents[nbor] == vert){
+            add_vid_to_queue(&tq, q, nbor_gid, child_label);
+            child_label += n_desc[nbor]; // n_desc for leaves is 1, so no need to add an extra 1
+          }
+        }
+      } else {
+        add_vid_to_send(&tq, q, vert_index, preorder_label); //ghosts get preorder set locally, then sent to owner
+      }
+
+    }
+    
+    empty_queue(&tq, q);
+    empty_send(&tq, q);
+#pragma omp barrier
+
+#pragma omp single
+    {
+      exchange_verts_bicc(g, comm, q);
+    }
+  } //end while
+  
+
+  //do a boundary exchange (because SOME vertices are difficult)
+                                                                 
+  thread_comm_t tc;                                            
+  init_thread_comm(&tc);                                       
+                                                                     
+#pragma omp for                                                
+  for (uint64_t i = 0; i < g->n_local; ++i) {                                                            
+    add_vid_to_send(&tq, q, i);                                
+    add_vid_to_queue(&tq, q, i);                               
+  }                                                            
+                                                                       
+  empty_send(&tq, q);                                          
+  empty_queue(&tq, q);                                         
+#pragma omp barrier                                            
+                                                                           
+  for (int32_t i = 0; i < nprocs; ++i)                         
+    tc.sendcounts_thread[i] = 0;                             
+                                                                             
+#pragma omp for schedule(guided) nowait                        
+  for (uint64_t i = 0; i < q->send_size; ++i) {                                                            
+    uint64_t vert_index = q->queue_send[i];                    
+    update_sendcounts_thread(g, &tc, vert_index);              
+  }                                                            
+                                                                               
+  for (int32_t i = 0; i < nprocs; ++i) {                                                            
+#pragma omp atomic                                             
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];       
+                                                                                           
+    tc.sendcounts_thread[i] = 0;                               
+  }                                                            
+#pragma omp barrier                                            
+                                                                                 
+#pragma omp single                                             
+  {                                                              
+    init_sendbuf_vid_data(comm);                                 
+  }                                                              
+                                                                                 
+#pragma omp for schedule(guided) nowait                        
+  for (uint64_t i = 0; i < q->send_size; ++i) {                                                            
+    uint64_t vert_index = q->queue_send[i];                    
+    update_vid_data_queues(g, &tc, comm,                       
+                           vert_index, preorder[vert_index]);   
+  }                                                            
+                                                                                   
+  empty_vid_data(&tc, comm);                                   
+#pragma omp barrier                                            
+                                                                                     
+#pragma omp single                                             
+  {                                                              
+    exchange_vert_data(g, comm, q);                              
+  } // end single                                                
+                                                                                     
+#pragma omp for                                                
+  for (uint64_t i = 0; i < comm->total_recv; ++i) {                                                            
+    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]); 
+    preorder[index] = comm->recvbuf_data[i];                    
+  }                                                            
+                                                                                       
+#pragma omp single                                             
+{                                                              
+  clear_recvbuf_vid_data(comm);                                
+}                                                              
+                                                                                       
+  clear_thread_comm(&tc);                                      
+
+  clear_thread_queue(&tq);
+}// end parallel
+  clear_queue_data(q);
+  free(q);
+  /*std::cout<<"\tCalculating Preorder Labels\n";
   std::queue<uint64_t> frontier;
   for(int i = 0; i < g->n_local; i++){
     if(levels[i] == 0){
@@ -658,42 +835,6 @@ void calculate_preorder(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, uint
     MPI_Allreduce(&local_done, &global_done, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     //std::cout<<"global number of vertices in frontiers: "<<global_done<<"\n";
     global_done = !global_done;
-  }
-  //go level-by-level on each process, communicating after each level is completed.
-  /*int max_level = 0;
-  for(int i = 0; i < g->n_local; i++){
-    if(max_level < levels[i]) max_level = levels[i];
-  }
-  int global_max_level = 0;
-  MPI_Allreduce(&max_level,&global_max_level, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  std::cout<<"\t\tRank "<<procid<<"'s Max level = "<<global_max_level<<"\n";
-  
-  for(int level = 0; level <= global_max_level; level++){
-    std::cout<<"Rank "<<procid<<" Calculating labels for level "<<level<<"\n";
-    //look through all owned vertices and calculate all their children serially
-    for(int i = 0; i < g->n_local; i++){
-      if(levels[i] != level) continue;  //either not involved in current calculation, or not able to be calculated yet
-      if(level == 0) {                   //base case, root is labeled 1
-        preorder[i] = 1;
-        std::cout<<"Rank "<<procid<<" setting vertex "<<g->local_unmap[i]<<"'s preorder label to 1\n";
-      }
-      int out_degree = out_degree(g, i);
-      uint64_t* outs = out_vertices(g, i);
-      uint64_t child_label = preorder[i] + 1; //first child's label is the parent's plus 1
-      for(int j = 0; j < out_degree; j++){
-        if(parents[outs[j]] == g->local_unmap[i]){
-          preorder[outs[j]] = child_label;
-          if(outs[j] < g->n_local){
-            std::cout<<"Rank "<<procid<<" setting vertex "<<g->local_unmap[outs[j]]<<"'s preorder label to "<<preorder[outs[j]]<<"\n";
-          } else {
-            std::cout<<"Rank "<<procid<<" setting vertex "<<g->ghost_unmap[outs[j]-g->n_local]<<"'s preorder label to "<<preorder[outs[j]]<<"\n"; 
-          }
-          child_label += n_desc[outs[j]]; //the subsequent children need to factor in the previous childs' descendants
-        }
-      }
-    }
-    std::cout<<"Rank "<<procid<<": entering communication\n"; 
-    owned_to_ghost_value_comm(g,comm,q,preorder);
   }*/
   
 }
@@ -890,6 +1031,11 @@ bool edge_is_owned(dist_graph_t* g, uint64_t curr_vtx, uint64_t nbor){
 void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_graph_t* aux_g, uint64_t* preorder, 
                       uint64_t* lows, uint64_t* highs, uint64_t* n_desc, uint64_t* parents){
   
+  double elt = 0.0;
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime();
+  }
   uint64_t n_edges = 0;
   std::cout<<"Calculating the number of edges in the aux graph\n";
   uint64_t edges_to_request = 0;
@@ -1005,7 +1151,14 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     owned_edge_thread_counts[tid] = n_edges;
     ghost_edge_thread_counts[tid] = edges_to_send;
   } 
-  
+    
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime() - elt;
+    if(procid == 0) printf("Aux Graph Edge Count: %f\n",elt);
+    elt = omp_get_wtime();
+  }
+
   uint64_t* owned_edge_thread_offsets = new uint64_t[omp_get_max_threads()+1];
   uint64_t* ghost_edge_thread_offsets = new uint64_t[omp_get_max_threads()+1];
   owned_edge_thread_offsets[0] = 0;
@@ -1101,6 +1254,13 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
       //if(global_edge_index == 2 || (vert1_g == 8208 && vert2_g == 0)) std::cout<<"Task "<<procid<<": received global edge "<<global_edge_index<<" from process "<<i<<"\n";
 
     }
+  }
+  
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime()-elt;
+    if(procid==0) printf("Aux Graph Remote Edge ID Request: %f\n",elt);
+    elt = omp_get_wtime();
   }
 
   uint64_t* srcs = (uint64_t*)malloc(n_edges*2*sizeof(uint64_t));//new uint64_t[n_edges*2];
@@ -1325,6 +1485,12 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     assert(srcIdx == owned_edge_thread_offsets[tid+1]*2);
     assert(ghost_edge_idx == ghost_edge_thread_offsets[tid+1]*2);
   }
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime()-elt;
+    if(procid==0) printf("Aux Graph Edgelist Creation: %f\n",elt);
+    elt = omp_get_wtime();
+  }
   std::cout<<"Finished populating srcs and dsts arrays:\n";
   
   //ghost_edges_to_send are the edges that this process knows, but other processes need in order to construct a complete ghost layer.
@@ -1419,6 +1585,14 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     }
   }
   
+
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime()-elt;
+    if(procid==0) printf("Aux Graph Ghost Edge Send: %f\n",elt);
+    elt = omp_get_wtime();
+  }
+
   n_edges += ghost_recv_total/2;
   /*for(int i = 0; i < srcIdx; i++){
     std::cout<<srcs[i]<<" ";
@@ -1495,6 +1669,12 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   MPI_Allreduce(&aux_g->n_local,&aux_g->n,1,MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
   //communicate number of local edges, add together
   MPI_Allreduce(&aux_g->m_local,&aux_g->m,1,MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime()-elt;
+    if(procid==0) printf("Aux Graph CSR Creation: %f\n",elt);
+    elt = omp_get_wtime();
+  }
   std::cout<<"aux_g->n = "<<aux_g->n<<" aux_g->m = "<<aux_g->m<<"\n";
 
 }
@@ -1724,7 +1904,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   
   //1. calculate descendants for each owned vertex, counting itself as its own descendant
   uint64_t* n_desc = new uint64_t[g->n_total];
-  calculate_descendants(g,comm,q,parents,n_desc);
+  calculate_descendants(g,comm,parents,n_desc);
   //std::cout<<"Finished calculating descendants\n";
   MPI_Barrier(MPI_COMM_WORLD);
   if (verbose && procid == 0) {
@@ -1748,7 +1928,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
 
   uint64_t* preorder = new uint64_t[g->n_total];
   for(int i = 0; i < g->n_total; i++) preorder[i] = 0;
-  calculate_preorder(g,comm,q,levels,parents,n_desc,preorder); 
+  calculate_preorder(g,comm,g->max_degree_vert,parents,n_desc,preorder); 
   //std::cout<<"Finished calculating preorder labels\n";
   MPI_Barrier(MPI_COMM_WORLD);
   if (verbose && procid == 0) {
@@ -1768,8 +1948,8 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }*/
   /*for(int i = 0; i < g->n_local; i++){
     printf("Rank %d: Vertex %d has a preorder label of %d \n",procid,g->local_unmap[i],preorder[i]);
-  }
-  for(int i = g->n_local; i < g->n_total; i++){
+  }*/
+  /*for(int i = g->n_local; i < g->n_total; i++){
     printf("Rank %d: Vertex %d has a preorder label of %d \n",procid,g->ghost_unmap[i-g->n_local],preorder[i]);  
   }*/
   //while(true); 
@@ -1791,7 +1971,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(int i = g->n_local; i < g->n_total; i++){
     printf("Rank %d: Vertex %d has a high of %d and a low of %d\n",procid,g->ghost_unmap[i-g->n_local],highs[i],lows[i]);  
   }*/
-  if(get_value(g->map, 0) < g->n_local) std::cout<<"vertex 0 has preorder label "<<preorder[get_value(g->map,0)]
+  /*if(get_value(g->map, 0) < g->n_local) std::cout<<"vertex 0 has preorder label "<<preorder[get_value(g->map,0)]
                                                  <<", low "<<lows[get_value(g->map,0)]<<", high "<<highs[get_value(g->map,0)]
                                                  <<", n_desc "<<n_desc[get_value(g->map,0)]<<"\n";
   if(get_value(g->map, 8208) < g->n_local) std::cout<<"vertex 8208 has preorder label "<<preorder[get_value(g->map,8208)]
@@ -1799,7 +1979,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
                                                     <<", n_desc "<<n_desc[get_value(g->map,8208)]<<"\n";
   if(get_value(g->map, 24574) < g->n_local) std::cout<<"vertex 24574 has preorder label "<<preorder[get_value(g->map,24574)]
                                                  <<", low "<<lows[get_value(g->map,24574)]<<", high "<<highs[get_value(g->map,24574)]
-                                                 <<", n_desc "<<n_desc[get_value(g->map,24574)]<<"\n";
+                                                 <<", n_desc "<<n_desc[get_value(g->map,24574)]<<"\n";*/
   //4. create auxiliary graph.
   dist_graph_t* aux_g = new dist_graph_t;
   //std::map< std::pair<uint64_t, uint64_t> , uint64_t > edgeToAuxVert;
