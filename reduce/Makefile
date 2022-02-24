@@ -2,15 +2,17 @@ CXX = mpicxx
 CXXFLAGS = -fopenmp -O0 -g -Wall -std=c++11
 LINKFLAGS = -fopenmp -O0 -g -Wall -std=c++11
 TARGET = reduce-graph
-TOCOMPILE = util.o fast_map.o dist_graph.o comms.o io_pp.o reduce_graph.o  main.o
+INCLUDE = ../include
+INCLUDE_COMPILE = util.o fast_map.o dist_graph.o comms.o io_pp.o 
+LOCAL_COMPILE = reduce_graph.o  main.o
 
 
-all: $(TOCOMPILE)
-	$(CXX) $(LINKFLAGS) -o $(TARGET) $(TOCOMPILE)
+all: $(INCLUDE_COMPILE) $(LOCAL_COMPILE)
+	$(CXX) $(LINKFLAGS) -o $(TARGET) $(INCLUDE_COMPILE) $(LOCAL_COMPILE)
 
-.cpp.o:
-	$(CXX) $(CXXFLAGS) -c $*.cpp
+%.o: $(INCLUDE)/%.cpp
+	$(CXX) $(CXXFLAGS) -c $(INCLUDE)/$*.cpp
 
 clean:
-	rm -f $(TOCOMPILE) $(TARGET)
+	rm -f $(INCLUDE_COMPILE) $(LOCAL_COMPILE) $(TARGET)
 

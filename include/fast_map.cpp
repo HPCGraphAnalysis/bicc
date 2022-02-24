@@ -83,8 +83,10 @@ void init_map(fast_map* map, uint64_t init_size)
   map->hashing = true;
   
 #pragma omp parallel for
-  for (uint64_t i = 0; i < map->capacity; ++i)
+  for (uint64_t i = 0; i < map->capacity; ++i) {
     map->arr[i*2] = NULL_KEY;
+    map->arr[i*2+1] = NULL_KEY;
+  }
 }
 
 void init_map_nohash(fast_map* map, uint64_t init_size)

@@ -2,7 +2,7 @@
 //@HEADER
 // *****************************************************************************
 //
-//  HPCGraph: Graph Computation on High Performance Computing Systems
+//  XtraPuLP: Xtreme-Scale Graph Partitioning using Label Propagation
 //              Copyright (2016) Sandia Corporation
 //
 // Under the terms of Contract DE-AC04-94AL85000 with Sandia Corporation,
@@ -43,24 +43,19 @@
 //@HEADER
 */
 
+
 #ifndef _IO_PP_H_
 #define _IO_PP_H_
 
 #include "dist_graph.h"
 #include "comms.h"
 
-int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
-  bool offset_vids);
+int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi, 
+                        bool offset_vids);
 
-int load_graph_edges_64(char *input_filename, graph_gen_data_t *ggi,
-  bool offset_vids);
-
-int load_graph_edges_64_split(char *input_prefix, graph_gen_data_t *ggi,
-  bool offset_vids);
-
-int write_labels(dist_graph_t* g, uint64_t* labels, char* labels_prefix);
+int load_graph_edges_64(char *input_filename, graph_gen_data_t *ggi, 
+                        bool offset_vids);
 
 int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm);
-
 
 #endif
