@@ -151,7 +151,7 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
   g->n_local = ggi->n_local;
   g->n_offset = 0;
   g->m = ggi->m;
-  g->m_local = ggi->m_local_read*2;
+  g->m_local = ggi->m*2;
   g->n_ghost = 0;
   g->n_total = g->n_local;
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
@@ -181,18 +181,31 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
   for (uint64_t i = 0; i < g->n_local; ++i)
     out_degree_list[i+1] = out_degree_list[i] + temp_counts[i];
   memcpy(temp_counts, out_degree_list, g->n_local*sizeof(uint64_t));
+  std::cout<<"temp_counts = \n\t";
+  for(uint64_t i = 0; i < g->n_local; i++){
+    std::cout<<temp_counts[i]<<" ";
+  }
+  std::cout<<"\n";
+
   for (uint64_t i = 0; i < ggi->m_local_read*2; i+=2) {
-    if(ggi->global_edge_indices != NULL)  g->edge_unmap[temp_counts[ggi->gen_edges[i]-g->n_offset]] = ggi->global_edge_indices[i/2];
+    std::cout<<"Looking at out_edges["<<temp_counts[ggi->gen_edges[i]]<<"]\n";
+    if(ggi->global_edge_indices != NULL) {
+      g->edge_unmap[temp_counts[ggi->gen_edges[i]-g->n_offset]] = ggi->global_edge_indices[i/2];
+    }
     out_edges[temp_counts[ggi->gen_edges[i] - g->n_offset]++] = ggi->gen_edges[i+1];
-    if(ggi->global_edge_indices != NULL)  g->edge_unmap[temp_counts[ggi->gen_edges[i]-g->n_offset]] = ggi->global_edge_indices[i/2];
+    if(ggi->global_edge_indices != NULL)  {
+      g->edge_unmap[temp_counts[ggi->gen_edges[i+1]-g->n_offset]] = ggi->global_edge_indices[i/2];
+      //std::cout<<"assigning g->edge_unmap["<<temp_counts[ggi->gen_edges[i] - g->n_offset]<<"] = "<<ggi->global_edge_indices[i/2]<<"\n";
+    }
+    std::cout<<"Looking at out_edges["<<temp_counts[ggi->gen_edges[i+1]]<<"]\n";
     out_edges[temp_counts[ggi->gen_edges[i+1] - g->n_offset]++] = ggi->gen_edges[i];  
   }
+  
   if(ggi->global_edge_indices != NULL){ 
-    init_map(g->edge_map, g->m_local*2);
-    for(uint64_t i = 0; i < g->m_local; i++){
-      //std::cout<<"setting global edge index "<<edge_unmap[i]<<" to local index "<<i<<"\n";
-      if(get_value(g->edge_map, g->edge_unmap[i]) == NULL_KEY){
-        set_value(g->edge_map, g->edge_unmap[i],i);
+    init_map_nohash(g->edge_map, g->m_local*2);
+    for(uint64_t i = 0; i < g->m_local; i+=2){
+      if(get_value(g->edge_map, g->edge_unmap[i/2]) == NULL_KEY){
+        set_value(g->edge_map, g->edge_unmap[i/2],i/2);
       }
     }
   }

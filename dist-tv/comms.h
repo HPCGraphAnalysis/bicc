@@ -793,8 +793,9 @@ inline void empty_queue(thread_queue_t* tq, queue_data_t* q)
   start_offset = q->next_size += tq->thread_queue_size;
 
   start_offset -= tq->thread_queue_size;
-  for (uint64_t i = 0; i < tq->thread_queue_size; ++i)
+  for (uint64_t i = 0; i < tq->thread_queue_size; ++i){
     q->queue_next[start_offset + i] = tq->thread_queue[i];
+  }
   tq->thread_queue_size = 0;
 }
 
