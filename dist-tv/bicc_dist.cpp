@@ -59,10 +59,10 @@
 #include <iostream>
 #include "bicc_dist.h"
 
-#include "comms.h"
-#include "dist_graph.h"
+#include "../include/comms.h"
+#include "../include/dist_graph.h"
 //#include "bfs.h"
-#include "reduce_graph.h"
+#include "../reduce/reduce_graph.h"
 #include "fast_ts_map.h"
 
 #define NOT_VISITED 18446744073709551615U
@@ -340,13 +340,13 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
     sendcnts[i] = 0;
   }
 
-  for(int i = g->n_local; i < g->n_total; i++){
+  for(uint64_t i = g->n_local; i < g->n_total; i++){
     sendcnts[g->ghost_tasks[i-g->n_local]] += 2;
   }
 
   int* recvcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
-  int status = MPI_Alltoall(sendcnts,1, MPI_INT,recvcnts,1,MPI_INT,MPI_COMM_WORLD);
+  MPI_Alltoall(sendcnts,1, MPI_INT,recvcnts,1,MPI_INT,MPI_COMM_WORLD);
   
   int* sdispls = new int[nprocs];
   int* rdispls = new int[nprocs];
@@ -370,14 +370,14 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
   int* recvbuf = new int[recvsize];
   
   //go through all the ghosted vertices, send their GIDs to the owning processor
-  for(int i = g->n_local; i < g->n_total; i++){
+  for(uint64_t i = g->n_local; i < g->n_total; i++){
     int proc_to_send = g->ghost_tasks[i - g->n_local];
     int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
     sentcount[proc_to_send] += 2;
     sendbuf[sendbufidx++] = g->ghost_unmap[i - g->n_local];
     sendbuf[sendbufidx++] = values[i];
   }
-  status = MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
+  MPI_Alltoallv(sendbuf,sendcnts,sdispls,MPI_INT,recvbuf,recvcnts,rdispls,MPI_INT,MPI_COMM_WORLD);
 
   //fill in the values that were sent along with the GIDs
   for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx+= 2){
@@ -389,7 +389,7 @@ void owned_to_ghost_value_comm(dist_graph_t* g, mpi_data_t* comm, queue_data_t* 
 
   
   //communicate owned values back to ghosts
-  status = MPI_Alltoallv(recvbuf,recvcnts,rdispls,MPI_INT, sendbuf,sendcnts,sdispls,MPI_INT,MPI_COMM_WORLD);
+  MPI_Alltoallv(recvbuf,recvcnts,rdispls,MPI_INT, sendbuf,sendcnts,sdispls,MPI_INT,MPI_COMM_WORLD);
 
   for(int updateIdx = 0; updateIdx < sendsize; updateIdx+=2){
     int gid = sendbuf[updateIdx];
@@ -413,13 +413,13 @@ void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier
     sendcnts[i] = 0;
   }
 
-  for(int i = g->n_local; i < g->n_total; i++){
+  for(uint64_t i = g->n_local; i < g->n_total; i++){
     sendcnts[g->ghost_tasks[i-g->n_local]] += 2;
   }
 
   int* recvcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++) recvcnts[i] = 0;
-  int status = MPI_Alltoall(sendcnts,1,MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+  MPI_Alltoall(sendcnts,1,MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
   
   int* sdispls = new int[nprocs];
   int* rdispls = new int[nprocs];
@@ -443,21 +443,21 @@ void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier
   int* recvbuf = new int[recvsize];
   
   //send along any information available on the current process
-  for(int i = g->n_local; i < g->n_total; i++){
+  for(uint64_t i = g->n_local; i < g->n_total; i++){
     int proc_to_send = g->ghost_tasks[i-g->n_local];
     int sendbufidx = sdispls[proc_to_send] + sentcount[proc_to_send];
     sentcount[proc_to_send] += 2;
     sendbuf[sendbufidx++] = g->ghost_unmap[i-g->n_local];
     sendbuf[sendbufidx++] = preorder[i];
   }
-  status = MPI_Alltoallv(sendbuf, sendcnts,sdispls,MPI_INT, recvbuf,recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
+  MPI_Alltoallv(sendbuf, sendcnts,sdispls,MPI_INT, recvbuf,recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
   
   //fill in nonzeros that were sent with GIDs
   for(int exchangeIdx = 0; exchangeIdx < recvsize; exchangeIdx += 2){
     int gid = recvbuf[exchangeIdx];
     int lid = get_value(g->map, gid);
     //std::cout<<"Rank "<<procid<<" received preorder label "<<recvbuf[exchangeIdx+1]<<" for vertex "<<gid<<"\n";
-    if(preorder[lid] == sentinel && recvbuf[exchangeIdx + 1] != sentinel){
+    if(preorder[lid] == sentinel && recvbuf[exchangeIdx + 1] != (int)sentinel){
       preorder[lid] = recvbuf[exchangeIdx+1];
       frontier.push(lid);
       //std::cout<<"Rank "<<procid<<" pushing vertex "<<gid<<" onto the local queue\n";
@@ -465,7 +465,7 @@ void communicate_preorder_labels(dist_graph_t* g, std::queue<uint64_t> &frontier
     recvbuf[exchangeIdx+1] = preorder[lid];
   }
 
-  status = MPI_Alltoallv(recvbuf,recvcnts,rdispls,MPI_INT,sendbuf,sendcnts,sdispls,MPI_INT,MPI_COMM_WORLD);
+  MPI_Alltoallv(recvbuf,recvcnts,rdispls,MPI_INT,sendbuf,sendcnts,sdispls,MPI_INT,MPI_COMM_WORLD);
   
   for(int updateIdx=0; updateIdx < sendsize; updateIdx += 2){
     int gid = sendbuf[updateIdx];
@@ -556,9 +556,7 @@ void boundary_exchange_parallel(dist_graph_t* g, queue_data_t* q, mpi_data_t* co
 #pragma omp for
   for(uint64_t i = 0; i < comm->total_recv; i++){
     uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
-    printf("vertex %lu (local %lu) has data value %lu\n",comm->recvbuf_vert[i],index,comm->recvbuf_data[i]);
     data[index] = comm->recvbuf_data[i];
-    printf("data[%lu] = %lu\n",i, data[i]);
   }
 
 #pragma omp single
@@ -607,12 +605,9 @@ extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, uint64_
     if(!has_heir){ 
       uint64_t parent = parents[vert_index];
       uint64_t parent_index = get_value(g->map, parent);
-      uint64_t parent_rank = NULL_KEY;
       if(parent_index < g->n_local){
-        parent_rank = (uint64_t)procid;
         add_vid_to_queue(&tq, q, /*queue[i]*/parent, /*queue[i+1]*/1);
       } else {
-        parent_rank = g->ghost_tasks[parent_index - g->n_local];
         add_vid_to_send(&tq, q, parent_index, 1);
       }
     }
@@ -1351,7 +1346,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   uint64_t* recvbuf = new uint64_t[recv_total];
   //request edges in request_edgelist, each of which are owned by procs_to_send[i/2]
   //request_edgelist has edges_to_request edges.
-  for(int i = 0; i < edges_to_request; i+=2){
+  for(uint64_t i = 0; i < edges_to_request; i+=2){
     sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = request_edgelist[i];
     sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = request_edgelist[i+1];
     sendbuf[sdispls_cpy[procs_to_send[i/2]]++] = 0;//this will be sent back with the GEI for the requested edge.
@@ -1366,7 +1361,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     uint64_t vert2_l = get_value(g->map, vert2_g);
     bool owned = edge_is_owned(g,vert1_l,vert2_l);
     if(vert1_l < g->n_local){
-      for(int j = g->out_degree_list[vert1_l]; j < g->out_degree_list[vert1_l+1]; j++){
+      for(uint64_t j = g->out_degree_list[vert1_l]; j < g->out_degree_list[vert1_l+1]; j++){
         if(g->out_edges[j] == vert2_l){
           recvbuf[i+2] = g->edge_unmap[j];
           //determine who owns this GEI
@@ -1376,7 +1371,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
         }
       }
     } else {
-      for(int j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
+      for(uint64_t j = g->out_degree_list[vert2_l]; j< g->out_degree_list[vert2_l+1]; j++){
         if(g->out_edges[j] == vert1_l){
           recvbuf[i+2] = g->edge_unmap[j];
           //determine who owns this GEI
@@ -1431,10 +1426,8 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   int* remote_endpoint_owners= (int*) malloc(edges_to_send*sizeof(int));
   //entries in these arrays take the form {v, w}, where v and w are global vertex identifiers.
   //additionally we ensure v < w.
-  std::cout<<"initializing srcs with "<<n_edges*2<<" indices\n";
   for(uint64_t i = 0; i < n_edges*2; i++){
     srcs[i] = 0;
-    std::cout<<"srcs["<<i<<"] = "<<srcs[i]<<"\n";
   }
   for(uint64_t i = 0; i < edges_to_send; i++){
     ghost_edges_to_send[i*2] = 0;
@@ -1444,9 +1437,6 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   }
   uint64_t srcIdx = 0;
   uint64_t ghost_edge_idx = 0;
-  uint64_t max_edge_GID = 0;
-  std::cout<<"Creating srcs and dsts arrays, "<<n_edges<<" edges to be created\n";
-  std::cout<<"srcs[14] = "<<srcs[14]<<"\n";
   
 #pragma omp parallel reduction(max:srcIdx,ghost_edge_idx)
   {
@@ -1467,10 +1457,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
         if(parents[v] == w_global || parents[w] == g->local_unmap[v]){
           //add a self edge
           if(edge_is_owned(g,v,w)/*edge {v,w} is owned*/){
-            std::cout<<"Accessing edge at adj index "<<w_idx<<", edge_unmap["<<w_idx<<"] = "<<g->edge_unmap[w_idx]<<"\n";
-            std::cout<<"srcs["<<srcIdx<<"] = "<<g->edge_unmap[w_idx]<<"\n";
             srcs[srcIdx++] = g->edge_unmap[w_idx];
-            std::cout<<"srcs["<<srcIdx<<"] = "<<g->edge_unmap[w_idx]<<"\n";
             srcs[srcIdx++] = g->edge_unmap[w_idx];
           }
         }
@@ -1504,7 +1491,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
             //add {{parents[v], v}, {parents[w], w}} (undirected edges)
             will_add_aux = true;
             //find GEI of {parents[v],v} (looking up v will always have the edge, as v is owned locally)
-            for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+            for(uint64_t e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
               if(g->out_edges[e] == get_value(g->map,parents[v])){
                 aux_endpoint_1_gei = g->edge_unmap[e];
                 break;
@@ -1516,7 +1503,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
             //find GEI of {parents[w],w} (w could be local or ghosted, and parents[w] local, ghosted, or remote)
             if(w_parent_lid < g->n_local){
-              for(int e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
+              for(uint64_t e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
                 if(g->out_edges[e] == w){
                   aux_endpoint_2_gei = g->edge_unmap[e];
                   break;
@@ -1527,7 +1514,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               else aux_endpoint_2_owner = g->ghost_tasks[w-g->n_local];
 
             } else if(w < g->n_local && w_parent_lid != NULL_KEY){
-              for(int e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
+              for(uint64_t e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
                 if(g->out_edges[e] == w_parent_lid){
                   aux_endpoint_2_gei = g->edge_unmap[e];
                   break;
@@ -1552,7 +1539,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               //add {{parents[v], v} , {v, w}} as an edge
               will_add_aux = true;
               //find GEI of {parents[v],v} (looking up v will always have the edge, as v is owned locally)
-              for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+              for(uint64_t e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
                 if(g->out_edges[e] == v_parent_lid){
                   aux_endpoint_1_gei = g->edge_unmap[e];
                   break;
@@ -1564,7 +1551,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               else aux_endpoint_1_owner = g->ghost_tasks[v_parent_lid-g->n_local];
               
               //find GEI of {w,v} (looking up v will always have the edge, v is owned locally)
-              for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+              for(uint64_t e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
                 if(g->out_edges[e] == w){
                   aux_endpoint_2_gei = g->edge_unmap[e];
                   break;
@@ -1581,7 +1568,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
               //find GEI for {parents[w], w} (w may be local or ghosted, parents[w] local, ghosted, or remote)
               if(w_parent_lid < g->n_local){ //parents[w] is local, w ghosted or local
-                for(int e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
+                for(uint64_t e = g->out_degree_list[w_parent_lid]; e < g->out_degree_list[w_parent_lid+1]; e++){
                   if(g->out_edges[e] == w){
                     aux_endpoint_1_gei = g->edge_unmap[e];
                     break;
@@ -1592,7 +1579,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
                 else aux_endpoint_1_owner = g->ghost_tasks[w-g->n_local];
 
               } else if(w < g->n_local && w_parent_lid != NULL_KEY){//w is local, parents[w] is ghosted
-                for(int e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
+                for(uint64_t e = g->out_degree_list[w]; e < g->out_degree_list[w+1]; e++){
                   if(g->out_edges[e] == w_parent_lid){
                     aux_endpoint_1_gei = g->edge_unmap[e];
                     break;
@@ -1611,7 +1598,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
               }
 
               //find GEI for {w,v} (looking up v will always have the edge, v is owned locally)
-              for(int e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
+              for(uint64_t e = g->out_degree_list[v]; e < g->out_degree_list[v+1]; e++){
                 if(g->out_edges[e] == w){
                   aux_endpoint_2_gei = g->edge_unmap[e];
                   break;
@@ -1628,7 +1615,6 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
           //an aux edge needs to be added from aux_endpoint_1_gei to aux_endpoint_2_gei.
           //aux_endpoint_1_gei is owned by aux_endpoint_1_owner, aux_endpoint_2_gei is owned by aux_endpoint_2_owner
           if(aux_endpoint_1_owner == procid){
-            if(srcIdx == 14) std::cout<<"Trying to put "<<aux_endpoint_1_gei<<" in srcs[14]\n";
             srcs[srcIdx++] = aux_endpoint_1_gei;
             srcs[srcIdx++] = aux_endpoint_2_gei;
           } else {
@@ -1639,7 +1625,6 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
           }
           
           if(aux_endpoint_2_owner == procid){
-            if(srcIdx == 14) std::cout<<"Trying to put "<<aux_endpoint_2_gei<<" in srcs[14]\n";
             srcs[srcIdx++] = aux_endpoint_2_gei;
             srcs[srcIdx++] = aux_endpoint_1_gei;
           } else {
@@ -1661,8 +1646,6 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     if(procid==0) printf("Aux Graph Edgelist Creation: %f\n",elt);
     elt = omp_get_wtime();
   }
-  std::cout<<"Finished populating srcs and dsts arrays:\n";
-  std::cout<<"srcs[14] = "<<srcs[14]<<"\n";
    
   //ghost_edges_to_send are the edges that this process knows, but other processes need in order to construct a complete ghost layer.
 
@@ -1695,8 +1678,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
     remow_sdispls_cpy[i] = 0;
   }
 
-  for(int i = 0; i < edges_to_send; i++){
-    if(ghost_procs_to_send[i] == NULL_KEY) std::cout<<"GHOST PROCS TO SEND CONTAINS NULL_KEY\n";
+  for(uint64_t i = 0; i < edges_to_send; i++){
     ghost_sendcounts[ghost_procs_to_send[i]]+=2;
     remow_sendcounts[ghost_procs_to_send[i]]++;
   }
@@ -1727,22 +1709,19 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   int32_t remow_recv_total = remow_rdispls[nprocs-1] + remow_recvcounts[nprocs-1];
   ghost_rdispls[nprocs] = ghost_recv_total;
   //realloc more room on the end of the edgelist, so we can simply tack on the extra edges at the end of the edge list.
-  std::cout<<"srcs[14] = "<<srcs[14]<<"\n";
   srcs = (uint64_t*) realloc(srcs,(n_edges*2+ghost_recv_total)*sizeof(uint64_t));
-  std::cout<<"srcs[14] = "<<srcs[14]<<"\n";
-  std::cout<<"reallocating srcs with "<<n_edges*2 + ghost_recv_total<<" indices\n";
   uint64_t* ghost_sendbuf = (uint64_t*) malloc((uint64_t)ghost_send_total*sizeof(uint64_t));
   int * remote_endpoint_owner_sendbuf = (int*) malloc((uint64_t)remow_send_total*sizeof(int));
   int * remote_endpoint_owner_recvbuf = (int*) malloc((uint64_t)remow_recv_total*sizeof(int));
 
-  for(uint64_t i = 0; i < ghost_send_total; i+=2){
+  for(int32_t i = 0; i < ghost_send_total; i+=2){
     uint64_t vert1 = ghost_edges_to_send[i];
     uint64_t vert2 = ghost_edges_to_send[i+1];
     //if(vert1 == 497433 || vert2 == 497433) std::cout<<"Sending edge "<<vert1<<" "<<vert2<<" to process "<<ghost_procs_to_send[i/2]<<"\n";
     ghost_sendbuf[ghost_sdispls_cpy[ghost_procs_to_send[i/2]]++] = vert1;
     ghost_sendbuf[ghost_sdispls_cpy[ghost_procs_to_send[i/2]]++] = vert2;
   }
-  for(uint64_t i = 0; i < remow_send_total; i++){
+  for(int32_t i = 0; i < remow_send_total; i++){
     remote_endpoint_owner_sendbuf[remow_sdispls_cpy[ghost_procs_to_send[i]]++] = remote_endpoint_owners[i];
   }
   MPI_Alltoallv(remote_endpoint_owner_sendbuf, remow_sendcounts, remow_sdispls, MPI_INT,
@@ -1788,7 +1767,6 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 
   //run through global IDs in the src position, map to global IDs, add to local_unmap, and update temp_counts
   for(uint64_t i = 0; i < aux_g->m_local*2; i+=2){
-    std::cout<<"accessing srcs["<<i<<"] = "<<srcs[i]<<"\n";
     if(get_value(aux_g->map, srcs[i]) == NULL_KEY){
       aux_g->local_unmap[curr_lid] = srcs[i];
       temp_counts[curr_lid]++;
@@ -1880,7 +1858,7 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
   int32_t* sendcounts = new int32_t[nprocs];
   int32_t* recvcounts = new int32_t[nprocs];
   for(int i = 0; i < nprocs; i++)sendcounts[i] = 0;
-  for(int i = 0; i < g->n_ghost; i++){
+  for(uint64_t i = 0; i < g->n_ghost; i++){
     sendcounts[g->ghost_tasks[i]] += 2;
   }
   MPI_Alltoall(sendcounts, 1, MPI_INT32_T, recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
@@ -1904,15 +1882,15 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
   uint64_t* sendbuf = new uint64_t[send_total];
   uint64_t* recvbuf = new uint64_t[recv_total];
 
-  for(int i = 0; i < g->n_ghost; i++){
+  for(uint64_t i = 0; i < g->n_ghost; i++){
     sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = g->ghost_unmap[i];
     sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = 0;
   }
   //do a boundary exchange
   MPI_Alltoallv(sendbuf,sendcounts, sdispls, MPI_UINT64_T, recvbuf, recvcounts, rdispls, MPI_UINT64_T, MPI_COMM_WORLD);
 
-  for(uint64_t i = 0; i< recv_total; i+=2){
-    uint64_t lid = get_value(g->map, recvbuf[i]);
+  for(int32_t i = 0; i< recv_total; i+=2){
+    int32_t lid = get_value(g->map, recvbuf[i]);
     recvbuf[i+1] = final_labels[lid];
   }
 
@@ -1928,15 +1906,15 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
 extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
 {
 
-  double elt = 0.0, elt2 = timer();
+  double elt = 0.0;
   if (verbose) {
     elt = timer();
     printf("Doing BCC-Color BFS stage\n");
   }
 
   uint64_t* srcs = new uint64_t[g->m_local];
-  for(int i = 0; i < g->n_local; i++){
-    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+  for(uint64_t i = 0; i < g->n_local; i++){
+    for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       srcs[j] = i;
     }
   }
@@ -2103,7 +2081,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   preorder_label_recursive(g,parents,preorder_recursive, g->max_degree_vert,pidx);*/
 
   uint64_t* preorder = new uint64_t[g->n_total];
-  for(int i = 0; i < g->n_total; i++) preorder[i] = 0;
+  for(uint64_t i = 0; i < g->n_total; i++) preorder[i] = 0;
   calculate_preorder(g,comm,g->max_degree_vert,parents,n_desc,preorder); 
   //std::cout<<"Finished calculating preorder labels\n";
   MPI_Barrier(MPI_COMM_WORLD);
@@ -2132,14 +2110,14 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //3. calculate high and low values for each owned vertex
   uint64_t* lows = new uint64_t[g->n_total];
   uint64_t* highs = new uint64_t[g->n_total];
-  for(int i = 0; i < g->n_total; i++){
+  for(uint64_t i = 0; i < g->n_total; i++){
     lows[i] = 0;
     highs[i] = 0;
   }
 
   calculate_high_low(g, comm, highs, lows, parents, preorder);
   //std::cout<<"Finished high low calculation\n";
-  std::cout<<"g->n_local = "<<g->n_local<<"\n"; 
+  /*std::cout<<"g->n_local = "<<g->n_local<<"\n"; 
   for(int i = 0; i < g->n_local; i++){
     std::cout<<"vertex "<<g->local_unmap[i]<<" high: "<<highs[i]<<" low: "<<lows[i]<<"\n";
   }
@@ -2147,7 +2125,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   for(int i = g->n_local; i < g->n_total; i++){
     std::cout<<"vertex "<<g->ghost_unmap[i-g->n_local]<<" high: "<<highs[i]<<" low: "<<lows[i]<<"\n";
   }
-  
+ */  
 
   MPI_Barrier(MPI_COMM_WORLD);
   if (verbose && procid == 0) {
@@ -2204,8 +2182,13 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //std::cout<<"aux_g->n_total = "<<aux_g->n_total<<"\n";
   //std::cout<<"aux_g->n_local = "<<aux_g->n_local<<"\n";
   uint64_t* labels = new uint64_t[aux_g->n_total];
-  for(int i = 0; i < aux_g->n_total; i++) labels[i] = 0;
-  connected_components(aux_g, comm, q, NULL,labels);
+  uint64_t* parent_fake = new uint64_t[aux_g->n_total];
+  for(uint64_t i = 0; i < aux_g->n_total; i++){
+    labels[i] = 0;
+    parent_fake[i] = NULL_KEY;
+  }
+
+  connected_components(aux_g, comm, q, parent_fake/*NULL*/,labels);
   //aux_connectivity_check(aux_g, edgeToAuxVert,auxVertToEdge, labels);
   
   MPI_Barrier(MPI_COMM_WORLD);
@@ -2224,7 +2207,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   }*/
   //6. remap labels to original edges and extend the labels to include certain non-tree edges that were excluded from the auxiliary graph.
   uint64_t* bicc_labels = new uint64_t[g->n_total];
-  for(int i = 0; i < g->n_total; i++) bicc_labels[i] = NULL_KEY;
+  for(uint64_t i = 0; i < g->n_total; i++) bicc_labels[i] = NULL_KEY;
   finish_edge_labeling(g,srcs,aux_g,preorder,parents,labels,bicc_labels);
   //std::cout<<"Rank "<<procid<< " finished final edge labeling\n";
   //std::cout<<"aux_g->n = "<<aux_g->n_total<<" aux_g->m = "<<aux_g->m<<"\n";
@@ -2248,8 +2231,8 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   //output the global list of articulation points, for easier validation (not getting rid of all debug output just yet.)
   uint64_t* artpts = new uint64_t[g->n_local];
   int n_artpts = 0;
-  for(int i = 0; i < g->n_local; i++){
-    for(int j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+  for(uint64_t i = 0; i < g->n_local; i++){
+    for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       if(levels[i] < levels[g->out_edges[j]] && bicc_labels[i] != bicc_labels[g->out_edges[j]]){
         artpts[n_artpts++] = g->local_unmap[i];
         break;
@@ -2259,7 +2242,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   int* sendcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++) sendcnts[i] = n_artpts;
   int* recvcnts = new int[nprocs];
-  int status = MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
+  MPI_Alltoall(sendcnts, 1, MPI_INT, recvcnts, 1, MPI_INT, MPI_COMM_WORLD);
   
   int* sdispls = new int[nprocs];
   int* rdispls = new int[nprocs];
@@ -2285,7 +2268,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       sendbuf[sendbufidx++] = artpts[i];
     }
   }
-  status = MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
+  MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
 
   if(procid == 0){
     std::cout<<"Found "<<recvsize<<" artpts\n";
@@ -2318,7 +2301,7 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   return 0;
 }
 
-extern "C" int create_dist_graph(dist_graph_t* g, 
+/*extern "C" int create_dist_graph(dist_graph_t* g, 
           unsigned long n_global, unsigned long m_global, 
           unsigned long n_local, unsigned long m_local,
           unsigned long* local_adjs, unsigned long* local_offsets, 
@@ -2345,5 +2328,5 @@ extern "C" int create_dist_graph(dist_graph_t* g,
   //get_ghost_weights(g);
 
   return 0;
-}
+}*/
 

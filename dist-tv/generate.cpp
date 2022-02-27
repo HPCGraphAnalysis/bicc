@@ -52,8 +52,8 @@
 #include <math.h>
 
 #include "generate.h"
-#include "dist_graph.h"
-#include "util.h"
+#include "../include/dist_graph.h"
+#include "../include/util.h"
 
 extern int procid, nprocs;
 extern int seed;

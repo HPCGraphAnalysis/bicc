@@ -87,6 +87,7 @@ int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
     read_offset_end = 2*sizeof(uint32_t)*nedges_global;
 
   uint64_t nedges = (read_offset_end - read_offset_start)/8;
+  uint64_t edge_offset = read_offset_start/8;
   ggi->m_local_read = nedges;
 
   if (debug) {
@@ -95,7 +96,8 @@ int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
 
   uint32_t* gen_edges_read = (uint32_t*)malloc(2*nedges*sizeof(uint32_t));
   uint64_t* gen_edges = (uint64_t*)malloc(2*nedges*sizeof(uint64_t));
-  if (gen_edges_read == NULL || gen_edges == NULL)
+  uint64_t* global_edge_indices = (uint64_t*)malloc(2*nedges*sizeof(uint64_t));
+  if (gen_edges_read == NULL || gen_edges == NULL || global_edge_indices == NULL)
     throw_err("load_graph_edges(), unable to allocate buffer", procid);
 
   fseek(infp, read_offset_start, SEEK_SET);
@@ -106,9 +108,13 @@ int load_graph_edges_32(char *input_filename, graph_gen_data_t *ggi,
   for (uint64_t i = 0; i < nedges*2; ++i)
     gen_edges[i] = (uint64_t)gen_edges_read[i];
 
+  for(uint64_t i = 0; i < nedges*2; i++){
+    global_edge_indices[i] = edge_offset+i;
+  }
+
   free(gen_edges_read);
   ggi->gen_edges = gen_edges;
-
+  ggi->global_edge_indices = global_edge_indices;
   if (verbose) {
     elt = omp_get_wtime() - elt;
     printf("Task %d read %lu edges, %9.6f (s)\n", procid, nedges, elt);
@@ -286,7 +292,9 @@ int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm)
   free(temp_recvcounts);
 
   uint64_t* recvbuf = (uint64_t*)malloc(total_recv*sizeof(uint64_t));
-  if (recvbuf == NULL)
+  //global edge index recvbuf
+  uint64_t* gei_recvbuf = (uint64_t*)malloc(total_recv*sizeof(uint64_t)/2);
+  if (recvbuf == NULL || gei_recvbuf == NULL)
   { 
     fprintf(stderr, "Task %d Error: exchange_out_edges(), unable to allocate buffer\n", procid);
     MPI_Abort(MPI_COMM_WORLD, 1);
@@ -301,6 +309,14 @@ int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm)
     printf("Task %d exchange_edges() num_comms %lu total_send %lu total_recv %lu\n", procid, num_comms, total_send, total_recv);
 
   uint64_t sum_recv = 0;
+  //global_edge_index stuff goes here, add to comm! 
+  uint64_t gei_sum_recv = 0;
+  int32_t* gei_sendcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* gei_recvcounts = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* gei_sdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* gei_rdispls = (int32_t*)malloc(nprocs*sizeof(int32_t));
+  int32_t* gei_sdispls_cpy = (int32_t*)malloc(nprocs*sizeof(int32_t)); 
+
   for (uint64_t c = 0; c < num_comms; ++c)
   {
     uint64_t send_begin = (ggi->m_local_read * c) / num_comms;
@@ -312,6 +328,8 @@ int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm)
     {
       comm->sendcounts[i] = 0;
       comm->recvcounts[i] = 0;
+      gei_sendcounts[i] = 0;
+      gei_recvcounts[i] = 0;
     }
 
     for (uint64_t i = send_begin; i < send_end; ++i)
@@ -319,29 +337,45 @@ int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm)
       uint64_t vert1 = ggi->gen_edges[i*2];
       int32_t vert_task1 = (int32_t)(vert1 / n_per_rank);
       comm->sendcounts[vert_task1] += 2;
+      gei_sendcounts[vert_task1] += 1; 
 
       uint64_t vert2 = ggi->gen_edges[i*2+1];
       int32_t vert_task2 = (int32_t)(vert2 / n_per_rank);
       comm->sendcounts[vert_task2] += 2;
+      gei_sendcounts[vert_task2] += 1;
     }
-
+    //edges
     MPI_Alltoall(comm->sendcounts, 1, MPI_INT32_T, 
                  comm->recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+
+    //global edge indices
+    MPI_Alltoall(gei_sendcounts, 1, MPI_INT32_T,
+                 gei_recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
 
     comm->sdispls[0] = 0;
     comm->sdispls_cpy[0] = 0;
     comm->rdispls[0] = 0;
+    gei_sdispls[0] = 0;
+    gei_sdispls_cpy[0] = 0;
+    gei_rdispls[0] = 0;
     for (int32_t i = 1; i < nprocs; ++i)
     {
       comm->sdispls[i] = comm->sdispls[i-1] + comm->sendcounts[i-1];
       comm->rdispls[i] = comm->rdispls[i-1] + comm->recvcounts[i-1];
       comm->sdispls_cpy[i] = comm->sdispls[i];
+
+      gei_sdispls[i] = gei_sdispls[i-1] + gei_sendcounts[i-1];
+      gei_rdispls[i] = gei_rdispls[i-1] + gei_recvcounts[i-1];
+      gei_sdispls_cpy[i] = gei_sdispls[i];
     }
 
     int32_t cur_send = comm->sdispls[nprocs-1] + comm->sendcounts[nprocs-1];
     int32_t cur_recv = comm->rdispls[nprocs-1] + comm->recvcounts[nprocs-1];
+    int32_t gei_cur_send = gei_sdispls[nprocs-1] + gei_sendcounts[nprocs-1];
+    int32_t gei_cur_recv = gei_rdispls[nprocs-1] + gei_recvcounts[nprocs-1];
     uint64_t* sendbuf = (uint64_t*) malloc((uint64_t)cur_send*sizeof(uint64_t));
-    if (sendbuf == NULL)
+    uint64_t* gei_sendbuf = (uint64_t*)malloc((uint64_t)gei_cur_send*sizeof(uint64_t));
+    if (sendbuf == NULL || gei_sendbuf == NULL)
     { 
       fprintf(stderr, "Task %d Error: exchange_out_edges(), unable to allocate comm buffers", procid);
       MPI_Abort(MPI_COMM_WORLD, 1);
@@ -356,19 +390,36 @@ int exchange_edges(graph_gen_data_t *ggi, mpi_data_t* comm)
 
       sendbuf[comm->sdispls_cpy[vert_task1]++] = vert1; 
       sendbuf[comm->sdispls_cpy[vert_task1]++] = vert2;
+      gei_sendbuf[gei_sdispls_cpy[vert_task1]++] = ggi->global_edge_indices[i];
       sendbuf[comm->sdispls_cpy[vert_task2]++] = vert2; 
       sendbuf[comm->sdispls_cpy[vert_task2]++] = vert1;
+      gei_sendbuf[gei_sdispls_cpy[vert_task2]++] = ggi->global_edge_indices[i];
     }
 
     MPI_Alltoallv(sendbuf, comm->sendcounts, comm->sdispls, MPI_UINT64_T, 
                   recvbuf+sum_recv, comm->recvcounts, comm->rdispls,
                   MPI_UINT64_T, MPI_COMM_WORLD);
+    
+    MPI_Alltoallv(gei_sendbuf, gei_sendcounts, gei_sdispls, MPI_UINT64_T, 
+                  gei_recvbuf+gei_sum_recv, gei_recvcounts, gei_rdispls,
+                  MPI_UINT64_T, MPI_COMM_WORLD);
+
     sum_recv += cur_recv;
+    gei_sum_recv += gei_cur_recv;
     free(sendbuf);
+    free(gei_sendbuf);
   }
 
+  free(gei_sendcounts);
+  free(gei_sdispls);
+  free(gei_recvcounts);
+  free(gei_rdispls);
+  free(gei_sdispls_cpy);
+
   free(ggi->gen_edges);
+  free(ggi->global_edge_indices);
   ggi->gen_edges = recvbuf;
+  ggi->global_edge_indices = gei_recvbuf;
   ggi->m_local_edges = total_recv / 2;
 
   if (verbose) {

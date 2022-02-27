@@ -144,11 +144,17 @@ inline void update_vid_data_queues_ghost(dist_graph_t* g,
 
 inline void add_vid_to_queue(thread_queue_t* tq, queue_data_t* q, 
                             uint64_t vertex_id);
+inline void add_vid_to_queue(thread_queue_t* tq, queue_data_t* q,
+                            uint64_t vertex_id1, uint64_t vertex_id2);
+
 inline void empty_queue(thread_queue_t* tq, queue_data_t* q);
 
 
 inline void add_vid_to_send(thread_queue_t* tq, queue_data_t* q, 
                             uint64_t vertex_id);
+inline void add_vid_to_send(thread_queue_t* tq, queue_data_t* q,
+                            uint64_t vertex_id1, uint64_t vertex_id2);
+
 inline void empty_send(thread_queue_t* tq, queue_data_t* q);
 
 
@@ -156,7 +162,80 @@ inline void add_vid_data_to_send(thread_comm_t* tc, mpi_data_t* comm,
   uint64_t vertex_id, int32_t data_val, int32_t send_rank);
 inline void empty_vid_data(thread_comm_t* tc, mpi_data_t* comm);
 
+inline void exchange_verts_bicc(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q){
+  comm->global_queue_size = 0;
+  uint64_t task_queue_size = q->next_size + q->send_size;
+  MPI_Allreduce(&task_queue_size, &comm->global_queue_size, 1,
+                MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
 
+  uint64_t num_comms = comm->global_queue_size / (uint64_t)MAX_SEND_SIZE + 1;
+  uint64_t sum_recv = 0;
+  for (uint64_t c = 0; c < num_comms; ++c)
+  {
+    uint64_t send_begin = (q->send_size * c) / num_comms;
+    uint64_t send_end = (q->send_size * (c + 1)) / num_comms;
+    if (c == (num_comms - 1)) 
+      send_end = q->send_size;
+    if(send_begin % 2 != 0) send_begin++;
+    if(send_end % 2 != 0) send_end++;
+
+    for(int32_t i = 0; i < nprocs; ++i)
+    {
+      comm->sendcounts[i] = 0;
+      comm->recvcounts[i] = 0;
+    }
+    for(uint64_t i = send_begin; i < send_end; i += 2)
+    {
+      uint64_t ghost_index = q->queue_send[i] - g->n_local;
+      uint64_t ghost_task = g->ghost_tasks[ghost_index]; 
+      comm->sendcounts[ghost_task] += 2;
+    }
+
+    MPI_Alltoall(comm->sendcounts, 1, MPI_INT32_T,
+                 comm->recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+
+    comm->sdispls[0] = 0; 
+    comm->sdispls_cpy[0] = 0;
+    comm->rdispls[0] = 0;
+    for (int32_t i = 1; i < nprocs; i++)
+    {
+      comm->sdispls[i] = comm->sdispls[i-1] + comm->sendcounts[i-1]; 
+      comm->rdispls[i] = comm->rdispls[i-1] + comm->recvcounts[i-1];
+      comm->sdispls_cpy[i] = comm->sdispls[i];
+    }
+
+    int32_t cur_send = comm->sdispls[nprocs-1] + comm->sendcounts[nprocs-1];
+    int32_t cur_recv = comm->rdispls[nprocs-1] + comm->recvcounts[nprocs-1];
+    comm->sendbuf_vert = (uint64_t*)malloc((uint64_t)(cur_send+1)*sizeof(uint64_t));
+    if (comm->sendbuf_vert == NULL)
+      throw_err("exchange_verts_bicc(), unable to allocate comm buffers",procid);
+
+    for (uint64_t i = send_begin; i < send_end; i += 2)
+    {
+      uint64_t ghost_index = q->queue_send[i] - g->n_local;
+      uint64_t ghost_task = g->ghost_tasks[ghost_index];
+      uint64_t vert = g->ghost_unmap[ghost_index];
+      uint64_t parent = q->queue_send[i+1];
+      comm->sendbuf_vert[comm->sdispls_cpy[ghost_task]++] = vert;
+      comm->sendbuf_vert[comm->sdispls_cpy[ghost_task]++] = parent;
+    }
+
+    MPI_Alltoallv(comm->sendbuf_vert,
+                  comm->sendcounts, comm->sdispls, MPI_UINT64_T,
+                  q->queue_next+q->next_size+sum_recv,
+                  comm->recvcounts, comm->rdispls, MPI_UINT64_T,
+                  MPI_COMM_WORLD);
+    free(comm->sendbuf_vert);
+    sum_recv += cur_recv;
+  }
+
+  q->queue_size = q->next_size + sum_recv;
+  q->next_size = 0;
+  q->send_size = 0;
+  uint64_t* temp = q->queue;
+  q->queue = q->queue_next;
+  q->queue_next = temp;
+}
 
 inline void exchange_verts(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q)
 {
@@ -409,38 +488,18 @@ inline void add_vid_to_queue(thread_queue_t* tq, queue_data_t* q,
   tq->thread_queue[tq->thread_queue_size++] = vertex_id;
 
   if (tq->thread_queue_size == THREAD_QUEUE_SIZE)
-  {
-    uint64_t start_offset;
-
-#pragma omp atomic capture
-    start_offset = q->next_size += THREAD_QUEUE_SIZE;
-
-    start_offset -= THREAD_QUEUE_SIZE;
-    for (uint64_t i = 0; i < THREAD_QUEUE_SIZE; ++i)
-      q->queue_next[start_offset + i] = tq->thread_queue[i];
-    tq->thread_queue_size = 0;
-  }
+    empty_queue(tq, q);
 }
 
 
-inline void add_vids_to_queue(thread_queue_t* tq, queue_data_t* q, 
+inline void add_vid_to_queue(thread_queue_t* tq, queue_data_t* q, 
                             uint64_t vertex_id1, uint64_t vertex_id2)
 {
   tq->thread_queue[tq->thread_queue_size++] = vertex_id1;
   tq->thread_queue[tq->thread_queue_size++] = vertex_id2;
 
   if (tq->thread_queue_size == THREAD_QUEUE_SIZE)
-  {
-    uint64_t start_offset;
-
-#pragma omp atomic capture
-    start_offset = q->next_size += THREAD_QUEUE_SIZE;
-
-    start_offset -= THREAD_QUEUE_SIZE;
-    for (uint64_t i = 0; i < THREAD_QUEUE_SIZE; ++i)
-      q->queue_next[start_offset + i] = tq->thread_queue[i];
-    tq->thread_queue_size = 0;
-  }
+    empty_queue(tq, q);
 }
 
 
@@ -463,17 +522,17 @@ inline void add_vid_to_send(thread_queue_t* tq, queue_data_t* q,
   tq->thread_send[tq->thread_send_size++] = vertex_id;
 
   if (tq->thread_send_size == THREAD_QUEUE_SIZE)
-  {
-    uint64_t start_offset;
+    empty_send(tq, q);
+}
 
-  #pragma omp atomic capture
-    start_offset = q->send_size += tq->thread_send_size;
-    
-    start_offset -= tq->thread_send_size;
-    for (uint64_t i = 0; i < THREAD_QUEUE_SIZE; ++i)
-      q->queue_send[start_offset + i] = tq->thread_send[i];
-    tq->thread_send_size = 0;
-  }
+inline void add_vid_to_send(thread_queue_t* tq, queue_data_t* q,
+                            uint64_t vertex_id1, uint64_t vertex_id2)
+{
+  tq->thread_send[tq->thread_send_size++] = vertex_id1;
+  tq->thread_send[tq->thread_send_size++] = vertex_id2;
+
+  if(tq->thread_send_size == THREAD_QUEUE_SIZE)
+    empty_send(tq, q);
 }
 
 inline void empty_send(thread_queue_t* tq, queue_data_t* q)

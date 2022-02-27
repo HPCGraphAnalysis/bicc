@@ -53,7 +53,7 @@
 extern int procid, nprocs;
 extern bool verbose, debug, verify;
 
-struct dist_graph_t;
+//struct dist_graph_t;
 struct mpi_data_t;
 struct queue_data_t;
 
@@ -67,6 +67,7 @@ struct graph_gen_data_t {
   uint64_t m_local_edges;
 
   uint64_t *gen_edges;
+  uint64_t *global_edge_indices;
 };
 
 struct dist_graph_t {
@@ -90,7 +91,9 @@ struct dist_graph_t {
   uint64_t* ghost_unmap;
   uint64_t* ghost_tasks;
   uint64_t* n_offsets;
+  uint64_t* edge_unmap;
   fast_map* map;
+  fast_map* edge_map;
 } ;
 #define out_degree(g, n) (g->out_degree_list[n+1] - g->out_degree_list[n])
 #define out_vertices(g, n) &g->out_edges[g->out_degree_list[n]]

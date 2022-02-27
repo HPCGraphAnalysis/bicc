@@ -48,6 +48,8 @@
 
 #include <stdint.h>
 
+double timer();
+
 void throw_err(char const* err_message);
 void throw_err(char const* err_message, int32_t task);
 void throw_err(char const* err_message, int32_t task, int32_t thread);
@@ -60,5 +62,14 @@ uint64_t* str_to_array(char *input_list_str, uint64_t* num);
 
 void parallel_prefixsums(
   uint64_t* in_array, uint64_t* out_array, uint64_t size);
+
+struct xs1024star_t {
+  uint64_t s[16]; 
+  int64_t p;
+} ;
+
+uint64_t xs1024star_next(xs1024star_t* xs);
+double xs1024star_next_real(xs1024star_t* xs);
+void xs1024star_seed(uint64_t seed, xs1024star_t* xs);
 
 #endif

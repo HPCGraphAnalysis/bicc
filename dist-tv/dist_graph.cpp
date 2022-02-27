@@ -181,23 +181,15 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
   for (uint64_t i = 0; i < g->n_local; ++i)
     out_degree_list[i+1] = out_degree_list[i] + temp_counts[i];
   memcpy(temp_counts, out_degree_list, g->n_local*sizeof(uint64_t));
-  std::cout<<"temp_counts = \n\t";
-  for(uint64_t i = 0; i < g->n_local; i++){
-    std::cout<<temp_counts[i]<<" ";
-  }
-  std::cout<<"\n";
 
   for (uint64_t i = 0; i < ggi->m_local_read*2; i+=2) {
-    std::cout<<"Looking at out_edges["<<temp_counts[ggi->gen_edges[i]]<<"]\n";
     if(ggi->global_edge_indices != NULL) {
       g->edge_unmap[temp_counts[ggi->gen_edges[i]-g->n_offset]] = ggi->global_edge_indices[i/2];
     }
     out_edges[temp_counts[ggi->gen_edges[i] - g->n_offset]++] = ggi->gen_edges[i+1];
     if(ggi->global_edge_indices != NULL)  {
       g->edge_unmap[temp_counts[ggi->gen_edges[i+1]-g->n_offset]] = ggi->global_edge_indices[i/2];
-      //std::cout<<"assigning g->edge_unmap["<<temp_counts[ggi->gen_edges[i] - g->n_offset]<<"] = "<<ggi->global_edge_indices[i/2]<<"\n";
     }
-    std::cout<<"Looking at out_edges["<<temp_counts[ggi->gen_edges[i+1]]<<"]\n";
     out_edges[temp_counts[ggi->gen_edges[i+1] - g->n_offset]++] = ggi->gen_edges[i];  
   }
   

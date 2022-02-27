@@ -7,15 +7,14 @@
 #include <string.h>
 
 #include "bicc_dist.h"
-#include "dist_graph.h"
+#include "../include/dist_graph.h"
 #include "generate.h"
-#include "comms.h"
-#include "io_pp.h"
-#include "util.h"
+#include "../include/comms.h"
+#include "../include/io_pp.h"
+#include "../include/util.h"
 
 extern int procid, nprocs;
 extern bool verbose, debug, verify;
-extern bool debug2 = true;
 
 void print_usage(char** argv)
 {

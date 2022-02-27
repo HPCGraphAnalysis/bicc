@@ -49,6 +49,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#include "dist_graph.h"
 #include "comms.h"
 #include "util.h"
 
@@ -59,8 +60,8 @@ void init_queue_data(dist_graph_t* g, queue_data_t* q)
 {  
   if (debug) { printf("Task %d init_queue_data() start\n", procid); }
 
-  uint64_t queue_size = g->n_local + g->n_ghost;
-  //q->queue = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
+  uint64_t queue_size = (uint64_t)((double)g->n_total*4.0);//g->n_local + g->n_ghost;
+  q->queue = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
   q->queue_next = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
   q->queue_send = (uint64_t*)malloc(queue_size*sizeof(uint64_t));
   if (q->queue_next == NULL || q->queue_send == NULL)
@@ -75,7 +76,7 @@ void init_queue_data(dist_graph_t* g, queue_data_t* q)
 void clear_queue_data(queue_data_t* q)
 {
   if (debug) { printf("Task %d clear_queue_data() start\n", procid); }
-
+  free(q->queue);
   free(q->queue_next);
   free(q->queue_send);
 
