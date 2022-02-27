@@ -108,9 +108,11 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
 
 
   for (uint64_t i = 0; i < g->m_local*2; i+=2){
-    out_edges[temp_counts[ggi->gen_edges[i] - g->n_offset]++] = ggi->gen_edges[i+1];
+    out_edges[temp_counts[ggi->gen_edges[i] - g->n_offset]] = ggi->gen_edges[i+1];
     if(ggi->global_edge_indices != NULL){
       g->edge_unmap[temp_counts[ggi->gen_edges[i] - g->n_offset]++] = ggi->global_edge_indices[i/2];
+    } else {
+      temp_counts[ggi->gen_edges[i] - g->n_offset]++;
     }
   }
 
