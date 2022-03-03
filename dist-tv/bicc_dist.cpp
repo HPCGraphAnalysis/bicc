@@ -69,6 +69,78 @@
 #define VISITED 18446744073709551614U
 #define ASYNCH 1
 
+void boundary_exchange_parallel(dist_graph_t* g, queue_data_t* q, mpi_data_t* comm, uint64_t* data){
+#pragma omp parallel default(shared) shared(data)
+  {
+  thread_queue_t tq;
+  init_thread_queue(&tq);
+  thread_comm_t tc;
+  init_thread_comm(&tc);
+
+#pragma omp for
+  for(uint64_t i = 0; i < g->n_local; i++){
+    add_vid_to_send(&tq, q, i);
+    add_vid_to_queue(&tq, q, i);
+  }
+
+  empty_send(&tq, q);
+  empty_queue(&tq, q);
+#pragma omp barrier
+
+  for(int32_t i = 0; i < nprocs; i++){
+    tc.sendcounts_thread[i] = 0;
+  }
+
+#pragma omp for schedule(guided) nowait
+  for(uint64_t i = 0; i < q->send_size; i++){
+    uint64_t vert_index = q->queue_send[i];
+    update_sendcounts_thread(g, &tc, vert_index);
+  }
+
+  for(int32_t i = 0; i < nprocs; i++){
+#pragma omp atomic
+    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+    tc.sendcounts_thread[i] = 0;
+  }
+#pragma omp barrier
+
+#pragma omp single
+{
+  init_sendbuf_vid_data(comm);
+}
+  
+#pragma omp for schedule(guided) nowait
+  for(uint64_t i = 0; i < q->send_size; i++){
+    uint64_t vert_index = q->queue_send[i];
+    update_vid_data_queues(g, &tc, comm, 
+                           vert_index, data[vert_index]);
+  }
+
+  empty_vid_data(&tc, comm);
+#pragma omp barrier
+
+#pragma omp single
+{
+  exchange_vert_data(g, comm, q);
+}
+
+#pragma omp for
+  for(uint64_t i = 0; i < comm->total_recv; i++){
+    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
+    data[index] = comm->recvbuf_data[i];
+  }
+
+#pragma omp single
+{
+  clear_recvbuf_vid_data(comm);
+}
+
+  clear_thread_comm(&tc);
+  clear_thread_queue(&tq);
+  }
+}
+
 int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, 
   uint64_t* parents, uint64_t* levels, uint64_t root)
 {  
@@ -291,7 +363,7 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
 
   clear_thread_queue(&tq);
 } // end parallel
-
+  boundary_exchange_parallel(g,q,comm,levels);
   clear_queue_data(q);
   free(q);
 
@@ -497,77 +569,6 @@ void preorder_label_recursive(dist_graph_t* g,uint64_t* parents, uint64_t* preor
   }
 }
 
-void boundary_exchange_parallel(dist_graph_t* g, queue_data_t* q, mpi_data_t* comm, uint64_t* data){
-#pragma omp parallel default(shared) shared(data)
-  {
-  thread_queue_t tq;
-  init_thread_queue(&tq);
-  thread_comm_t tc;
-  init_thread_comm(&tc);
-
-#pragma omp for
-  for(uint64_t i = 0; i < g->n_local; i++){
-    add_vid_to_send(&tq, q, i);
-    add_vid_to_queue(&tq, q, i);
-  }
-
-  empty_send(&tq, q);
-  empty_queue(&tq, q);
-#pragma omp barrier
-
-  for(int32_t i = 0; i < nprocs; i++){
-    tc.sendcounts_thread[i] = 0;
-  }
-
-#pragma omp for schedule(guided) nowait
-  for(uint64_t i = 0; i < q->send_size; i++){
-    uint64_t vert_index = q->queue_send[i];
-    update_sendcounts_thread(g, &tc, vert_index);
-  }
-
-  for(int32_t i = 0; i < nprocs; i++){
-#pragma omp atomic
-    comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
-
-    tc.sendcounts_thread[i] = 0;
-  }
-#pragma omp barrier
-
-#pragma omp single
-{
-  init_sendbuf_vid_data(comm);
-}
-  
-#pragma omp for schedule(guided) nowait
-  for(uint64_t i = 0; i < q->send_size; i++){
-    uint64_t vert_index = q->queue_send[i];
-    update_vid_data_queues(g, &tc, comm, 
-                           vert_index, data[vert_index]);
-  }
-
-  empty_vid_data(&tc, comm);
-#pragma omp barrier
-
-#pragma omp single
-{
-  exchange_vert_data(g, comm, q);
-}
-
-#pragma omp for
-  for(uint64_t i = 0; i < comm->total_recv; i++){
-    uint64_t index = get_value(g->map, comm->recvbuf_vert[i]);
-    data[index] = comm->recvbuf_data[i];
-  }
-
-#pragma omp single
-{
-  clear_recvbuf_vid_data(comm);
-}
-
-  clear_thread_comm(&tc);
-  clear_thread_queue(&tq);
-  }
-}
 
 extern "C" void calculate_descendants(dist_graph_t* g, mpi_data_t* comm, uint64_t* parents, uint64_t* n_desc){
   queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));
@@ -1393,8 +1394,8 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   fast_ts_map* remote_global_edge_indices = (struct fast_ts_map*)malloc(sizeof(struct fast_ts_map));
   fast_map* remote_global_edge_owners = (struct fast_map*)malloc(sizeof(struct fast_map));
 
-  init_map(remote_global_edge_indices,g->m_local*3);
-  init_map(remote_global_edge_owners, g->m_local);
+  init_map(remote_global_edge_indices,g->m_local*4);
+  init_map(remote_global_edge_owners, g->m_local*4);
 
   for(int i = 0; i < nprocs; i++){
     for(int j = sdispls[i]; j < sdispls[i+1]; j+=4){
@@ -1754,7 +1755,7 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
   aux_g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
   /*if((g->m_local + g->n_local)*2 < g->n) init_map_nohash(aux_g->map, g->n);
   else init_map(aux_g->map, (g->m_local+g->n_local)*2);*/
-  init_map(aux_g->map, g->n_local*2);
+  init_map(aux_g->map, g->m_local*4);
   aux_g->local_unmap = (uint64_t*)malloc(g->m_local*sizeof(uint64_t));
   
   uint64_t curr_lid = 0;
@@ -1838,12 +1839,25 @@ void create_aux_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, dist_g
 void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g, uint64_t* preorder, uint64_t* parents,
                           uint64_t * aux_labels, uint64_t* final_labels){
   //update final_labels (vertex labels) with the edge labels from aux_labels
+  double elt = 0.0;
+  double map_elt = 0.0;
+  
+  if(verbose){
+    elt = timer();
+  }
+  
+  if(get_value(g->map,11775) < g->n_local){
+    std::cout<<"*****Vertex 11775 has parent "<<parents[get_value(g->map,11775)]<<"*****\n";
+  }
+
   for(uint64_t i = 0; i < g->n_local; i++){
     for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       uint64_t vert1_lid = i;
       uint64_t vert2_lid = g->out_edges[j];
       uint64_t edge_gid = g->edge_unmap[j];
+      double temp = timer();
       uint64_t edge_lid = get_value(aux_g->map, edge_gid);
+      map_elt += timer() - temp;
       if(edge_lid != NULL_KEY){
         if(final_labels[vert1_lid] > aux_labels[edge_lid]){
           final_labels[vert1_lid] = aux_labels[edge_lid];
@@ -1851,8 +1865,28 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
         if(final_labels[vert2_lid] > aux_labels[edge_lid]){
           final_labels[vert2_lid] = aux_labels[edge_lid];
         }
+
+        uint64_t vert1_gid = g->local_unmap[i];
+        uint64_t vert2_gid = 0;
+        if(vert2_lid < g->n_local) vert2_gid = g->local_unmap[i];
+        else vert2_gid = g->ghost_unmap[vert2_lid - g->n_local];
+
+        if(vert1_gid == 11775) std::cout<<"Task "<<procid<<": Vertex 11775 has label "<<final_labels[vert1_lid]<<"\n";
+        if(vert2_gid == 11775) std::cout<<"Task "<<procid<<": Vertex 11775 has label "<<final_labels[vert2_lid]<<"\n";
       }
     }
+  } 
+  if(get_value(g->map,11775) != NULL_KEY){
+    std::cout<<"Before Ghost Exchange\n";
+    std::cout<<"Task "<<procid<<": Vertex 11775 has label "<<final_labels[get_value(g->map,11775)]<<"\n";
+  }
+
+  if(verbose){
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = timer() - elt;
+    printf("Data access time: %f\n",map_elt);
+    printf("Mapping from edge to vertex labels: %f\n",elt);
+    elt = timer();
   }
 
   int32_t* sendcounts = new int32_t[nprocs];
@@ -1884,13 +1918,16 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
 
   for(uint64_t i = 0; i < g->n_ghost; i++){
     sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = g->ghost_unmap[i];
-    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = 0;
+    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = final_labels[i+g->n_local];
   }
   //do a boundary exchange
   MPI_Alltoallv(sendbuf,sendcounts, sdispls, MPI_UINT64_T, recvbuf, recvcounts, rdispls, MPI_UINT64_T, MPI_COMM_WORLD);
 
   for(int32_t i = 0; i< recv_total; i+=2){
     int32_t lid = get_value(g->map, recvbuf[i]);
+    if(final_labels[lid] > recvbuf[i+1]){
+      final_labels[lid] = recvbuf[i+1];
+    }
     recvbuf[i+1] = final_labels[lid];
   }
 
@@ -1898,7 +1935,20 @@ void finish_edge_labeling(dist_graph_t* g,uint64_t* g_srcs, dist_graph_t* aux_g,
 
   for(int i = 0; i < send_total; i+=2){
     uint64_t ghost_lid = get_value(g->map, sendbuf[i]);
-    final_labels[ghost_lid] = sendbuf[i+1];
+    if(final_labels[ghost_lid] > sendbuf[i+1]){
+      final_labels[ghost_lid] = sendbuf[i+1];
+    }
+  }
+
+  if(get_value(g->map,11775) != NULL_KEY){
+    std::cout<<"After Ghost Exchange\n";
+    std::cout<<"Task "<<procid<<": Vertex 11775 has label "<<final_labels[get_value(g->map,11775)]<<"\n";
+  }
+  if(verbose){
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = timer() - elt;
+    if(procid == 0) printf("Final ghost exchange: %f\n",elt);
+    elt = timer();
   }
   //done
 }
@@ -2239,6 +2289,28 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
       }
     }
   }
+
+/*  for(uint64_t i = 0; i < g->n_local; i++){
+    bool print = false;
+    if(g->local_unmap[i] == 11775 || g->local_unmap[i] == 15294 || g->local_unmap[i] == 16109 || g->local_unmap[i] == 28592 || 
+       g->local_unmap[i] == 31593 || g->local_unmap[i] == 31708 || g->local_unmap[i] == 32238 || g->local_unmap[i] == 32248 ||
+       g->local_unmap[i] == 32695 || g->local_unmap[i] == 32752){
+      std::cout<<"Task "<<procid<<": "<<g->local_unmap[i]<<" (label "<<bicc_labels[i]<<") has lower level neighbors (labels):\n\t";
+      print = true;
+    }
+    for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
+      if(print && levels[i] < levels[g->out_edges[j]] && bicc_labels[i] != bicc_labels[g->out_edges[j]]){
+        uint64_t nbor = g->out_edges[j];
+        if(nbor < g->n_local){
+          std::cout<<g->local_unmap[nbor]<<" ("<<bicc_labels[nbor]<<") "<<"level "<<levels[nbor]<<" ";
+        } else {
+          std::cout<<g->ghost_unmap[nbor - g->n_local]<<" ("<<bicc_labels[nbor]<<") "<<"level "<<levels[nbor]<<" ";
+        }
+      }
+    }
+    if(print) std::cout<<"\n";
+  }*/
+
   int* sendcnts = new int[nprocs];
   for(int i = 0; i < nprocs; i++) sendcnts[i] = n_artpts;
   int* recvcnts = new int[nprocs];
@@ -2271,10 +2343,40 @@ extern "C" int bicc_dist(dist_graph_t* g,mpi_data_t* comm, queue_data_t* q)
   MPI_Alltoallv(sendbuf, sendcnts, sdispls, MPI_INT, recvbuf, recvcnts, rdispls, MPI_INT, MPI_COMM_WORLD);
 
   if(procid == 0){
+    std::ifstream ans("rmat_15-arts");
+    int* found_arts = new int[g->n];
+    int* known_arts = new int[g->n];
+
+    for(uint64_t i = 0; i < g->n; i++){
+      found_arts[i] = 0;
+      known_arts[i] = 0;
+    }
+
+    for(int i = 0; i < recvsize; i++){
+      found_arts[recvbuf[i]] = 1;
+    }
+
+    int art = 0;
+    while(ans >> art){
+      known_arts[art] = 1;
+    }
+
     std::cout<<"Found "<<recvsize<<" artpts\n";
-    /*for(int i = 0; i < recvsize; i++){
-      std::cout<<"Vertex "<<recvbuf[i]<<" is an articulation point\n";
-    }*/
+
+    uint64_t correct = 0;
+    uint64_t false_positives = 0;
+    uint64_t false_negatives = 0;
+    for(uint64_t i = 0; i < g->n; i++){
+      if(found_arts[i] && known_arts[i]) correct++;
+      if(found_arts[i] && !known_arts[i]){
+        std::cout<<"Vertex "<<i<<" is a false positive\n";
+        false_positives++;
+      }
+      if(!found_arts[i] && known_arts[i]) false_negatives++;
+    }
+    std::cout<<correct<<" correct artpts\n";
+    std::cout<<false_positives<<" false positives\n";
+    std::cout<<false_negatives<<" false negatives\n";
   }
 
   if (verbose &&procid==0) {
