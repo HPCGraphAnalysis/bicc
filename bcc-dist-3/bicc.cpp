@@ -65,7 +65,91 @@
 extern int procid, nprocs;
 extern bool verbose, debug, verify;
 
-int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, 
+// GetArticulationPoints(i, d)
+//     visited[i] := true
+//     depth[i] := d
+//     low[i] := d
+//     childCount := 0
+//     isArticulation := false
+
+//     for each ni in adj[i] do
+//         if not visited[ni] then
+//             parent[ni] := i
+//             GetArticulationPoints(ni, d + 1)
+//             childCount := childCount + 1
+//             if low[ni] ≥ depth[i] then
+//                 isArticulation := true
+//             low[i] := Min (low[i], low[ni])
+//         else if ni ≠ parent[i] then
+//             low[i] := Min (low[i], depth[ni])
+//     if (parent[i] ≠ null and isArticulation) or (parent[i] = null and childCount > 1) then
+//         Output i as articulation point
+
+
+int bicc_ht(dist_graph_t* g, uint64_t vert, uint64_t cur_depth,
+    bool* visited, uint64_t* depth, uint64_t* low, uint64_t* parent,
+    bool* is_art)
+{
+  visited[vert] = true;
+  depth[vert] = cur_depth;
+  low[vert] = cur_depth;
+  bool is_articulation = false;
+  uint64_t child_count = 0;
+  
+  uint64_t out_degree = out_degree(g, vert);
+  uint64_t* outs = out_vertices(g, vert);
+  for (uint64_t j = 0; j < out_degree; ++j) {
+    uint64_t out = outs[j];
+    if (!visited[out]) {
+      parent[out] = vert;
+      bicc_ht(g, out, cur_depth+1, visited, depth, low, parent, is_art);
+      ++child_count;
+      if (low[out] >= depth[vert]) {
+        is_articulation = true;
+      }
+      low[vert] = low[vert] < low[out] ? low[vert] : low[out];
+    } else if (out != parent[vert]) {
+      low[vert] = low[vert] < depth[out] ? low[vert] : depth[out];
+    }
+  }
+  if ( (parent[vert] != NULL_KEY && is_articulation) || 
+        (parent[vert] == NULL_KEY && child_count > 1) ) {
+    is_art[vert] = true;
+  }
+  
+  return 0;
+}
+
+int run_serial(dist_graph_t* g, uint64_t root)
+{
+  double elt = omp_get_wtime();
+  
+  bool* visited = new bool[g->n];
+  bool* is_art = new bool[g->n];
+  uint64_t* depth = new uint64_t[g->n];
+  uint64_t* low = new uint64_t[g->n];
+  uint64_t* parent = new uint64_t[g->n];
+  
+  for (uint64_t i = 0; i < g->n; ++i) {
+    visited[i] = false;
+    is_art[i] = false;
+    depth[i] = NULL_KEY;
+    low[i] = NULL_KEY;
+    parent[i] = NULL_KEY;
+  }
+  bicc_ht(g, root, 0, visited, depth, low, parent, is_art);
+  
+  delete [] visited;
+  delete [] is_art;
+  delete [] depth;
+  delete [] low;
+  delete [] parent;
+  
+  printf("Serial time: %lf\n", omp_get_wtime() - elt);  
+}
+    
+
+int bicc_bfs(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q, 
   uint64_t* parents, uint64_t* levels, uint64_t root)
 {  
   if (debug) { printf("procid %d bicc_bfs() start\n", procid); }
@@ -74,9 +158,6 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
     MPI_Barrier(MPI_COMM_WORLD);
     elt = omp_get_wtime();
   }
-
-  queue_data_t* q = (queue_data_t*)malloc(sizeof(queue_data_t));;
-  init_queue_data(g, q);
 
   q->queue_size = 0;
   q->next_size = 0;
@@ -166,8 +247,6 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
   } // end while
 
 
-
-
   // do full boundary exchange of parents data
 
   thread_comm_t tc;
@@ -237,56 +316,8 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
 }
 
   clear_thread_comm(&tc);
-
-
-// #pragma omp for nowait
-//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
-//     uint64_t vert = g->local_unmap[vert_index];
-//     uint64_t parent = parents[vert_index];
-//     uint64_t parent_index = get_value(g->map, parent);
-    
-//     if (parent_index >= g->n_local) {
-//       //printf("woo %lu %lu\n", parent_index, vert);
-//       add_vid_to_send(&tq, q, parent_index, vert);
-//     }
-//   }
-  
-//   empty_queue(&tq, q);
-//   empty_send(&tq, q);
-// #pragma omp barrier
-
-// #pragma omp single
-// {
-//   //printf("%lu WOO \n", q->queue_next);
-//   exchange_verts_bicc(g, comm, q);
-// }
-
-// #pragma omp for
-//   for (uint64_t i = 0; i < q->queue_size; i += 2) {
-//     uint64_t parent = q->queue[i];
-//     uint64_t child = q->queue[i+1];
-//     uint64_t child_index = get_value(g->map, child);
-//     parents[child_index] = parent;
-//     assert(child_index >= g->n_local);
-//     //printf("WOO %lu %lu\n", parent, child);
-//   }
-
-// #pragma omp for
-//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
-//     uint64_t out_degree = out_degree(g, vert_index);
-//     uint64_t* outs = out_vertices(g, vert_index);
-//     for (uint64_t j = 0; j < out_degree; ++j) {
-//       if (outs[j] >= g->n_local)
-//         assert(parents[outs[j]] < VISITED);
-//     }
-//   }
-
-
   clear_thread_queue(&tq);
 } // end parallel
-
-  clear_queue_data(q);
-  free(q);
 
   if (verbose) {
     elt = omp_get_wtime() - elt;
@@ -297,7 +328,7 @@ int bicc_bfs(dist_graph_t* g, mpi_data_t* comm,
   return 0;
 }
 
-int bicc_init_data(dist_graph_t* g, 
+int bicc_init_data(dist_graph_t* g, mpi_data_t* comm,
   uint64_t* parents, uint64_t* levels, 
   uint64_t* high, uint64_t* low, uint64_t* high_levels)
 {
@@ -311,24 +342,8 @@ int bicc_init_data(dist_graph_t* g,
   for (uint64_t i = 0; i < g->n_local; ++i)
     high_levels[i] = levels[i] == 0 ? levels[i] : levels[i] - 1;
 
-  return 0;
-}
 
-
-int run_bicc(dist_graph_t* g, mpi_data_t* comm, 
-  uint64_t* high, uint64_t* low, uint64_t* parents, 
-  uint64_t* levels, uint64_t* high_levels)
-{ 
-  if (debug) { printf("Task %d run_bicc() start\n", procid); }
-  double elt = 0.0;
-  if (verbose) {
-    MPI_Barrier(MPI_COMM_WORLD);
-    elt = omp_get_wtime();
-  }
-
-  uint64_t color_changes = g->n;
-  uint64_t iter = 0;
-
+  // do exchange of each of these
   for (int32_t i = 0; i < nprocs; ++i)
     comm->sendcounts_temp[i] = 0;
 
@@ -382,22 +397,57 @@ int run_bicc(dist_graph_t* g, mpi_data_t* comm,
     comm->recvbuf_vert[i] = vert_index;
   }
   
+  clear_thread_comm(&tc);
+  
 #pragma omp single
   if (debug) printf("Task %d initialize ghost data success\n", procid);
+} // end parallel
+
+  clear_allbuf_vid_data(comm);
+  
+  return 0;
+}
+
+
+int run_bicc(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
+  uint64_t* high, uint64_t* low, uint64_t* parents, 
+  uint64_t* levels, uint64_t* high_levels)
+{ 
+  if (debug) { printf("Task %d run_bicc() start\n", procid); }
+  double elt = 0.0;
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime();
+  }
+
+  uint64_t color_changes = g->n;
+  uint64_t iter = 0;
+  
+  bool* process_vert = (bool*)malloc(g->n_local*sizeof(bool));
+  bool* process_vert_next = (bool*)malloc(g->n_local*sizeof(bool));
+
+  q->send_size = 0;
+  for (int32_t i = 0; i < nprocs; ++i)
+    comm->sendcounts_temp[i] = 0;
+  
+  comm->global_queue_size = 1;
+  uint64_t temp_send_size = 0;
+#pragma omp parallel default(shared)
+{
+  thread_queue_t tq;
+  thread_comm_t tc;
+  init_thread_queue(&tq);
+  init_thread_comm(&tc);
 
 #pragma omp for
-  for (uint64_t i = 0; i < comm->total_send; ++i)
-  {
-    uint64_t index = get_value(g->map, comm->sendbuf_vert[i]);
-    assert(index < g->n_total);
-    comm->sendbuf_vert[i] = index;
-  } 
-
-#pragma omp single
-  if (debug) printf("Task %d initialize send buff index success\n", procid);
-
+  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    process_vert[vert_index] = true;
+    process_vert_next[vert_index] = false;
+  }
+  
   while (color_changes)
   {    
+    tq.thread_queue_size = 0;
 #pragma omp single
     if (debug) {
       printf("Task %d Iter %lu Changes %lu run_bicc(), %9.6lf\n", 
@@ -410,6 +460,10 @@ int run_bicc(dist_graph_t* g, mpi_data_t* comm,
 #pragma omp for schedule(guided) reduction(+:color_changes)
     for (uint64_t i = 0; i < g->n_local; ++i)
     {
+      if (!process_vert[i]) continue;
+      process_vert[i] = false;
+      
+      bool send = false;
       uint64_t vert_index = i;
       uint64_t vert_high = high[vert_index];
       
@@ -439,6 +493,7 @@ int run_bicc(dist_graph_t* g, mpi_data_t* comm,
           high_levels[vert_index] = out_high_level;
           vert_high_level = out_high_level;
           ++color_changes;
+          send = true;
         }
         if (out_high_level < vert_high_level)
         {
@@ -446,7 +501,8 @@ int run_bicc(dist_graph_t* g, mpi_data_t* comm,
           vert_high = out_high;
           high_levels[vert_index] = out_high_level;
           vert_high_level = out_high_level;
-          ++color_changes;   
+          ++color_changes;  
+          send = true; 
         }
         if (vert_high == out_high)
         {
@@ -456,42 +512,104 @@ int run_bicc(dist_graph_t* g, mpi_data_t* comm,
             low[vert_index] = out_low;
             vert_low = out_low;
             ++color_changes;
+            send = true;
           }
         }
       }
+      if (send) {
+        add_vid_to_send(&tq, q, vert_index);
+        ++tq.thread_queue_size;
+        for (uint64_t j = 0; j < out_degree; ++j) {
+          if (outs[j] < g->n_local)
+            process_vert_next[outs[j]] = true;
+        }
+      }
+    }
+    
+    empty_send(&tq, q);
+
+#pragma omp atomic
+    q->next_size += tq.thread_queue_size;
+
+#pragma omp barrier
+
+    for (int32_t i = 0; i < nprocs; ++i)
+      tc.sendcounts_thread[i] = 0;
+    
+#pragma omp for schedule(guided)
+    for (uint64_t i = 0; i < q->send_size; ++i) {
+      uint64_t vert_index = q->queue_send[i];
+      update_sendcounts_thread(g, &tc, vert_index, 3);
     }
 
-#pragma omp for
-    for (uint64_t i = 0; i < comm->total_send; i += 3) {
-      comm->sendbuf_data[i] = high[comm->sendbuf_vert[i]];
-      comm->sendbuf_data[i+1] = low[comm->sendbuf_vert[i]];
-      comm->sendbuf_data[i+2] = high_levels[comm->sendbuf_vert[i]];
+  for (int32_t i = 0; i < nprocs; ++i)
+    {
+  #pragma omp atomic
+      comm->sendcounts_temp[i] += tc.sendcounts_thread[i];
+
+      tc.sendcounts_thread[i] = 0;
     }
+#pragma omp barrier
 
 #pragma omp single
 {
-    exchange_data(comm);
+    init_sendbuf_vid_data(comm);    
+    init_recvbuf_vid_data(comm);
 }
 
-#pragma omp for
-    for (uint64_t i = 0; i < comm->total_recv; i += 3) {
-      high[comm->recvbuf_vert[i]] = comm->recvbuf_data[i];
-      low[comm->recvbuf_vert[i]] = comm->recvbuf_data[i+1];
-      high_levels[comm->recvbuf_vert[i]] = comm->recvbuf_data[i+2];
+#pragma omp for schedule(guided)
+    for (uint64_t i = 0; i < q->send_size; ++i) {
+      uint64_t vert_index = q->queue_send[i];
+      update_vid_data_queues(g, &tc, comm, vert_index, 
+        high[vert_index], low[vert_index], high_levels[vert_index]);
     }
+
+    empty_vid_data(&tc, comm);
+#pragma omp barrier
+
+#pragma omp single
+  {
+    exchange_verts(comm);
+    exchange_data(comm);
+  }
+
+#pragma omp for schedule(guided)
+  for (uint64_t i = 0; i < comm->total_recv; i += 3)
+  {
+    uint64_t vert_index = get_value(g->map, comm->recvbuf_vert[i]);
+    assert(vert_index >= g->n_local);
+    high[vert_index] = comm->recvbuf_data[i];
+    low[vert_index] = comm->recvbuf_data[i+1];
+    high_levels[vert_index] = comm->recvbuf_data[i+2];
+    
+    vert_index -= g->n_local;
+    uint64_t out_degree = ghost_out_degree(g, vert_index);
+    uint64_t* outs = ghost_out_vertices(g, vert_index);
+    for (uint64_t j = 0; j < out_degree; ++j)
+      process_vert_next[outs[j]] = true; 
+  }
 
 #pragma omp single
 {
-  MPI_Allreduce(MPI_IN_PLACE, &color_changes, 1, 
-    MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-  ++iter;
+    clear_recvbuf_vid_data(comm);
+    MPI_Allreduce(MPI_IN_PLACE, &color_changes, 1, 
+      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+    ++iter;
+    
+    bool* tmp = process_vert;
+    process_vert = process_vert_next;
+    process_vert_next = tmp;
+    
+    printf("Rank %d, Send size: %lu, Receive size: %lu\n", 
+      procid, q->send_size, comm->total_recv);
+    q->send_size = 0;
 }
   } // end for loop
 
   clear_thread_comm(&tc);
+  clear_thread_queue(&tq);
 } // end parallel
 
-  clear_allbuf_vid_data(comm);
 
   if (verbose) {
     elt = omp_get_wtime() - elt;
@@ -501,6 +619,7 @@ int run_bicc(dist_graph_t* g, mpi_data_t* comm,
 
   return 0;
 }
+
 
 int run_art_pts(dist_graph_t* g, mpi_data_t* comm, uint64_t* high)
 {
@@ -546,7 +665,8 @@ int run_art_pts(dist_graph_t* g, mpi_data_t* comm, uint64_t* high)
 }
 
 
-int bicc_dist(dist_graph_t* g, mpi_data_t* comm, uint64_t root)
+int bicc_dist(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
+  uint64_t root)
 {  
   if (debug) printf("Task %d bicc_dist() start\n", procid);
 
@@ -556,20 +676,20 @@ int bicc_dist(dist_graph_t* g, mpi_data_t* comm, uint64_t root)
   uint64_t* parents = (uint64_t*)malloc(g->n_total*sizeof(uint64_t));
   uint64_t* levels = (uint64_t*)malloc(g->n_total*sizeof(uint64_t));
   root = 0;
-  bicc_bfs(g, comm, parents, levels, root);
+  bicc_bfs(g, comm, q, parents, levels, root);
 
   uint64_t* high = (uint64_t*)malloc(g->n_total*sizeof(uint64_t));
   uint64_t* low = (uint64_t*)malloc(g->n_total*sizeof(uint64_t));
   uint64_t* high_levels = (uint64_t*)malloc(g->n_total*sizeof(uint64_t));
-  bicc_init_data(g, parents, levels, high, low, high_levels);
+  bicc_init_data(g, comm, parents, levels, high, low, high_levels);
 
-  run_bicc(g, comm, high, low, parents, levels, high_levels);
+  run_bicc(g, comm, q, high, low, parents, levels, high_levels);
   free(low);
   free(high_levels);
   free(parents);
   free(levels);
 
-  run_art_pts(g, comm, high);
+  //run_art_pts(g, comm, high);
   free(high);
 
   MPI_Barrier(MPI_COMM_WORLD);

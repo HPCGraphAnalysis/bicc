@@ -80,7 +80,7 @@ int main(int argc, char **argv)
   debug2 = false;
   verify = false;
   output = false;
-  bool offset_vids = false;
+  bool offset_vids = true;
 
   char* input_prefix = strdup(argv[1]);
   uint64_t root = 0;
@@ -106,6 +106,7 @@ int main(int argc, char **argv)
     exchange_edges(ggi, comm);
     create_graph(ggi, g);
     relabel_edges(g);
+    create_ghost_graph(g);
     if (part_list != NULL)
       repart_graph(g, comm, part_list);
   } else {
@@ -120,6 +121,7 @@ int main(int argc, char **argv)
   init_queue_data(g, q);
   //dist_graph_t* g_new = reduce_graph(g, comm, q);
   //free(q);
+  //exit(0);
   
   root = g->max_degree_vert;
   
@@ -127,18 +129,19 @@ int main(int argc, char **argv)
   uint64_t* levels = new uint64_t[g->n_total];
   uint64_t* preorders = new uint64_t[g->n_total];
   
-  bicc_bfs(g, comm, parents, levels, root);
+  bicc_bfs(g, comm, q, parents, levels, root);
   preorder_tree(g, comm, q, parents, levels, preorders);
-  
+  /*
   uint64_t* num_descendents = new uint64_t[g->n_total];
   uint64_t* mins = new uint64_t[g->n_total];
   uint64_t* maxes = new uint64_t[g->n_total];
   get_min_max_size(g, comm, q,
     parents, preorders, 
     num_descendents, mins, maxes);
+  */
   
-  
-  // bicc_dist(g, comm, root);
+  //bicc_dist(g, comm, q, root);
+  //run_serial(g, root);
   
   // get_max_degree_vert(g_new);
   // root = g_new->max_degree_vert;

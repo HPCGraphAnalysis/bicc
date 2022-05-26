@@ -44,47 +44,47 @@ dist_graph_t* reduce_graph(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q)
   delete [] levels;
   delete [] labels;
   
-  ggi_new->gen_edges = (uint64_t*)malloc(sizeof(uint64_t)*g->n_local*8);
-#pragma omp parallel 
-{
-  uint64_t tq[THREAD_H_QUEUE_SIZE];
-  uint64_t tq_size = 0;
+//   ggi_new->gen_edges = (uint64_t*)malloc(sizeof(uint64_t)*g->n_local*8);
+// #pragma omp parallel 
+// {
+//   uint64_t tq[THREAD_H_QUEUE_SIZE];
+//   uint64_t tq_size = 0;
   
-#pragma omp for
-  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
-    uint64_t v = g->local_unmap[vert_index];
-    uint64_t u = parents1[vert_index];
-    uint64_t w = parents2[vert_index];
-    assert(u != NULL_KEY);
-    if (v != u) {
-      add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, v, u);
-      add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, u, v);
-      //printf("edge 1 %lu %lu\n", v, u);
-    }
-    if (w != NULL_KEY && v != w) {
-      add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, v, w);
-      add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, w, v);
-      //printf("edge 2 %lu %lu\n", v, w);
-    }
-  }
+// #pragma omp for
+//   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+//     uint64_t v = g->local_unmap[vert_index];
+//     uint64_t u = parents1[vert_index];
+//     uint64_t w = parents2[vert_index];
+//     assert(u != NULL_KEY);
+//     if (v != u) {
+//       add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, v, u);
+//       add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, u, v);
+//       //printf("edge 1 %lu %lu\n", v, u);
+//     }
+//     if (w != NULL_KEY && v != w) {
+//       add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, v, w);
+//       add_to_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read, w, v);
+//       //printf("edge 2 %lu %lu\n", v, w);
+//     }
+//   }
 
-  empty_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read);
-} // end parallel
+//   empty_queue(tq, tq_size, ggi_new->gen_edges, ggi_new->m_local_read);
+// } // end parallel
   
-  ggi_new->m_local_read /= 2;
-  ggi_new->m_local_edges = ggi_new->m_local_read;
-  MPI_Allreduce(&ggi_new->m_local_edges, &ggi_new->m, 1, 
-    MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+  // ggi_new->m_local_read /= 2;
+  // ggi_new->m_local_edges = ggi_new->m_local_read;
+  // MPI_Allreduce(&ggi_new->m_local_edges, &ggi_new->m, 1, 
+  //   MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
 
   dist_graph_t* g_new = (dist_graph_t*)malloc(sizeof(dist_graph_t));
-  if (nprocs > 1) {
-    exchange_edges(ggi_new, comm);
-    create_graph(ggi_new, g_new);
-    relabel_edges(g_new);
-  } else {
-    create_graph_serial(ggi_new, g_new);
-  }
-  free(ggi_new);
+  // if (nprocs > 1) {
+  //   exchange_edges(ggi_new, comm);
+  //   create_graph(ggi_new, g_new);
+  //   relabel_edges(g_new);
+  // } else {
+  //   create_graph_serial(ggi_new, g_new);
+  // }
+  // free(ggi_new);
   
   elt = omp_get_wtime() - elt;
   if (debug) printf("Rank %d reduce_graph() success, %lf (s)\n", procid, elt);
@@ -264,6 +264,9 @@ int connected_components(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   q->send_size = 0;
   for (int32_t i = 0; i < nprocs; ++i)
     comm->sendcounts_temp[i] = 0;
+  
+  bool* process_vert = (bool*)malloc(g->n_local*sizeof(bool));
+  bool* process_vert_next = (bool*)malloc(g->n_local*sizeof(bool));
 
   comm->global_queue_size = 1;
   uint64_t temp_send_size = 0;
@@ -285,6 +288,12 @@ int connected_components(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     labels[vert_index] = vert;
   }
 
+#pragma omp for
+  for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    process_vert[vert_index] = true;
+    process_vert_next[vert_index] = false;
+  }
+    
   while (comm->global_queue_size)
   {
     tq.thread_queue_size = 0;
@@ -292,6 +301,9 @@ int connected_components(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 #pragma omp for schedule(guided) nowait
     for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index)
     {
+      if (!process_vert[vert_index]) continue;
+      process_vert[vert_index] = false;
+      
       bool send = false;
       uint64_t vert = g->local_unmap[vert_index];
 
@@ -318,6 +330,10 @@ int connected_components(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
       if (send) {
         add_vid_to_send(&tq, q, vert_index);
         ++tq.thread_queue_size;
+        for (uint64_t j = 0; j < out_degree; ++j) {
+          if (outs[j] < g->n_local)
+            process_vert_next[outs[j]] = true;
+        }
       }
     }  
 
@@ -371,24 +387,36 @@ int connected_components(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
 } // end single
 
 
-#pragma omp for
+#pragma omp for schedule(guided)
     for (uint64_t i = 0; i < comm->total_recv; ++i)
     {
       uint64_t vert_index = get_value(g->map, comm->recvbuf_vert[i]);
       assert(vert_index >= g->n_local);
       labels[vert_index] = comm->recvbuf_data[i];
+      
+      vert_index -= g->n_local;
+      uint64_t out_degree = ghost_out_degree(g, vert_index);
+      uint64_t* outs = ghost_out_vertices(g, vert_index);
+      for (uint64_t j = 0; j < out_degree; ++j)
+        process_vert_next[outs[j]] = true; 
     }
 
 #pragma omp single
 {   
     clear_recvbuf_vid_data(comm);
     ++level;
+    
+    bool* tmp = process_vert;
+    process_vert = process_vert_next;
+    process_vert_next = tmp;
 
     if (debug) printf("Rank %d send_size %lu global_size %li\n", 
       procid, temp_send_size, comm->global_queue_size);
 }
 
   } // end while
+  clear_thread_comm(&tc);
+  clear_thread_queue(&tq);
 } // end parallel 
 
   if (verify) {

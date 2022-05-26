@@ -75,6 +75,7 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
   g->m = ggi->m * 2;
   g->m_local = ggi->m_local_edges;
   g->map = (struct fast_map*)malloc(sizeof(struct fast_map));
+  g->m_ghost = 0;
   g->n_ghost = 0;
   g->n_total = 0;
   g->ghost_degrees = NULL;
@@ -109,16 +110,36 @@ int create_graph(graph_gen_data_t *ggi, dist_graph_t *g)
   for (uint64_t i = 0; i < g->n_local; ++i)
     temp_counts[i] = out_degree_list[i];
 
-#pragma omp parallel for
+  uint64_t m_ghost = 0;
+#pragma omp parallel for reduction(+:m_ghost)
   for (uint64_t i = 0; i < g->m_local*2; i+=2) {
     int64_t index = -1;
     uint64_t src = ggi->gen_edges[i];
     uint64_t dst = ggi->gen_edges[i+1];
     assert(src < ggi->n);
     assert(dst < ggi->n);
+    if (dst < g->n_offset or dst >= g->n_offset + g->n_local)
+      ++m_ghost;
 #pragma omp atomic capture
   { index = temp_counts[src - g->n_offset]; temp_counts[src - g->n_offset]++; }
     out_edges[index] = dst;
+  }
+  
+  g->m_ghost = m_ghost;
+  printf("m_ghost: %lu\n", g->m_ghost);
+  g->ghost_out_edges = (uint64_t*)malloc(g->m_ghost*2*sizeof(uint64_t));
+  g->m_ghost = 0;
+#pragma omp parallel for
+  for (uint64_t i = 0; i < g->m_local*2; i += 2) {
+    int64_t index = -1;
+    uint64_t src = ggi->gen_edges[i];
+    uint64_t dst = ggi->gen_edges[i+1];
+    if (dst < g->n_offset or dst >= g->n_offset + g->n_local) {
+  #pragma omp atomic capture
+      { index = g->m_ghost; g->m_ghost += 2; }
+      g->ghost_out_edges[index] = dst;
+      g->ghost_out_edges[index+1] = src;
+    }
   }
   
   free(ggi->gen_edges);
@@ -232,6 +253,74 @@ int create_graph_serial(graph_gen_data_t *ggi, dist_graph_t *g)
   return 0;
 }
 
+int create_ghost_graph(dist_graph_t* g)
+{
+  if (debug) { printf("Rank %d create_ghost_graph() start\n", procid); }
+
+  double elt = 0.0;
+  if (verbose) {
+    MPI_Barrier(MPI_COMM_WORLD);
+    elt = omp_get_wtime();
+  }
+  
+  uint64_t* out_edges = (uint64_t*)malloc(g->m_ghost/2*sizeof(uint64_t));
+  uint64_t* out_degree_list = (uint64_t*)malloc((g->n_ghost+1)*sizeof(uint64_t));
+  uint64_t* temp_counts = (uint64_t*)malloc(g->n_ghost*sizeof(uint64_t));
+  if (out_edges == NULL || out_degree_list == NULL || temp_counts == NULL)
+    throw_err("create_ghost_graph(), unable to allocate graph edge storage", procid);
+
+#pragma omp parallel for 
+  for (uint64_t i = 0; i < g->n_ghost+1; ++i)
+    out_degree_list[i] = 0;
+#pragma omp parallel for 
+  for (uint64_t i = 0; i < g->n_ghost; ++i)
+    temp_counts[i] = 0;
+
+#pragma omp parallel for
+  for (uint64_t i = 0; i < g->m_ghost; i += 2) {
+    uint64_t src = g->ghost_out_edges[i];
+    uint64_t dst = g->ghost_out_edges[i+1];
+    src = get_value(g->map, src);
+    dst = get_value(g->map, dst);
+    g->ghost_out_edges[i] = src;
+    g->ghost_out_edges[i+1] = dst;
+    
+#pragma omp atomic
+    ++temp_counts[src - g->n_local];
+  }
+  
+  parallel_prefixsums(temp_counts, out_degree_list+1, g->n_ghost);
+    
+#pragma omp parallel for
+  for (uint64_t i = 0; i < g->n_ghost; ++i)
+    temp_counts[i] = out_degree_list[i];
+
+#pragma omp parallel for
+  for (uint64_t i = 0; i < g->m_ghost; i += 2) {
+    int64_t index = -1;
+    uint64_t src = g->ghost_out_edges[i];
+    uint64_t dst = g->ghost_out_edges[i+1];
+    assert(src >= g->n_local);
+    assert(dst < g->n_local);
+#pragma omp atomic capture
+  { index = temp_counts[src - g->n_local]; temp_counts[src - g->n_local]++; }
+    out_edges[index] = dst;
+  }
+  
+  free(g->ghost_out_edges);
+  free(temp_counts);
+  g->ghost_out_edges = out_edges;
+  g->ghost_out_degree_list = out_degree_list;
+  
+  if (verbose) {
+    elt = omp_get_wtime() - elt;
+    printf("Task %d create_ghost_graph() %9.6f (s)\n", procid, elt);
+  }
+  
+  if (debug) { printf("Task %d create_ghost_graph() success\n", procid); }
+  return 0;
+}
+  
 
 int clear_graph(dist_graph_t *g)
 {
@@ -304,7 +393,7 @@ int relabel_edges(dist_graph_t *g)
     g->ghost_unmap[cur_index] = g->map->unique_keys[i];
     g->ghost_tasks[cur_index] = g->map->unique_keys[i] / n_per_rank;
   }
-
+  
   if (verbose) {
     elt = omp_get_wtime() - elt;
     printf(" Task %d relabel_edges() %9.6f (s)\n", procid, elt); 

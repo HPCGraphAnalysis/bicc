@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <fstream>
 
 #include "dist_graph.h"
@@ -173,6 +174,7 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   // next, initialize array for nexts, next_subs, ranks, counts
 #pragma omp for schedule(guided)
   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    if (out_degree(g, vert_index) == 0) continue;
     nexts[vert_index] = new uint64_t[num_children[vert_index]+1];
     next_subs[vert_index] = new uint64_t[num_children[vert_index]+1];
     counts[vert_index] = new uint64_t[num_children[vert_index]+1];
@@ -247,6 +249,7 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   // {vid, subscript, rank, next, next_subscript, rank_next}
 #pragma omp for 
   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    if (out_degree(g, vert_index) == 0) continue;
     uint64_t vert = g->local_unmap[vert_index];
 
     // initialize passing to children
@@ -477,6 +480,7 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   // get max preorder
 #pragma omp for reduction(max:max_preorder)
   for (uint64_t i = 0; i < g->n_local; ++i) {
+    if (out_degree(g, i) == 0) continue;
     if (counts[i][0] > max_preorder) {
       max_preorder = counts[i][0];
     }
@@ -493,6 +497,7 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   // set values using max preorder
 #pragma omp for
   for (uint64_t i = 0; i < g->n_local; ++i) {
+    if (out_degree(g, i) == 0) continue;
     preorders[i] = max_preorder - counts[i][0];
   }
 
@@ -503,6 +508,7 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
   // build arrays and do exchange
 #pragma omp for
   for (uint64_t vert_index = 0; vert_index < g->n_local; ++vert_index) {
+    if (out_degree(g, vert_index) == 0) continue;
     uint64_t vert = g->local_unmap[vert_index];
     uint64_t preorder = preorders[vert_index];    
     int32_t rank = preorder / num_per_rank;
@@ -744,31 +750,31 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
     //printf("%lu %lu %lu\n", vert_index, vert, preorder);
   }
 
-#pragma omp single
-{
-  uint64_t* all_preorders = new uint64_t[g->n];
+// #pragma omp single
+// {
+//   uint64_t* all_preorders = new uint64_t[g->n];
   
-  for (uint64_t i = 0; i < g->n; ++i)
-    all_preorders[i] = 0;
+//   for (uint64_t i = 0; i < g->n; ++i)
+//     all_preorders[i] = 0;
   
-  for (uint64_t i = 0; i < g->n_local; ++i) {
-    uint64_t vert = g->local_unmap[i];
-    all_preorders[vert] = preorders[i];
-  }
+//   for (uint64_t i = 0; i < g->n_local; ++i) {
+//     uint64_t vert = g->local_unmap[i];
+//     all_preorders[vert] = preorders[i];
+//   }
   
-  MPI_Allreduce(MPI_IN_PLACE, all_preorders, g->n, 
-    MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+//   MPI_Allreduce(MPI_IN_PLACE, all_preorders, g->n, 
+//     MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
   
-  bool* has_label = new bool[g->n];
-  for (uint64_t i = 0; i < g->n; ++i)
-    has_label[i] = 0;
+//   bool* has_label = new bool[g->n];
+//   for (uint64_t i = 0; i < g->n; ++i)
+//     has_label[i] = 0;
   
-  for (uint64_t i = 0; i < g->n; ++i) {
-    //printf("%lu %lu\n", i, all_preorders[i]);
-    assert(has_label[all_preorders[i]] == false);
-    has_label[all_preorders[i]] = true;
-  }
-}
+//   for (uint64_t i = 0; i < g->n; ++i) {
+//     //printf("%lu %lu\n", i, all_preorders[i]);
+//     assert(has_label[all_preorders[i]] == false);
+//     has_label[all_preorders[i]] = true;
+//   }
+// }
   
   // do boundary exchange of preorders  
 #pragma omp for
@@ -889,6 +895,8 @@ int preorder_tree(dist_graph_t* g, mpi_data_t* comm, queue_data_t* q,
  
   
 } // end parallel
+
+  if (verbose && procid == 0) printf("PreTime: %lf\n", omp_get_wtime() - elt);
 
   return 0;
 }
