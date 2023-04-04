@@ -1611,11 +1611,34 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, uint64_t* preord
   if(verbose){
     elt = timer();
   }
+
   uint64_t* final_labels = new uint64_t[g->n_total];
+
+  int32_t* sendcounts = new int32_t[nprocs];
+  int32_t** local_sendcounts;
+  int32_t* recvcounts = new int32_t[nprocs];
+
+  int32_t* sdispls = new int32_t[nprocs];
+  int32_t* rdispls = new int32_t[nprocs];
+  int32_t* sdispls_cpy = new int32_t[nprocs];
+
+  int32_t send_total;
+  int32_t recv_total;
+
+  uint64_t* sendbuf;
+  uint64_t* recvbuf;
+
+#pragma omp parallel
+{
+  int tid = omp_get_thread_num();
+  int tcount = omp_get_num_threads();
+
+#pragma omp single
   for(uint64_t i = 0; i < g->n_total; i++){
     final_labels[i] = NULL_KEY;
   }
 
+#pragma omp single
   for(uint64_t i = 0; i < g->n_local; i++){
     for(uint64_t j = g->out_degree_list[i]; j < g->out_degree_list[i+1]; j++){
       uint64_t vert1_lid = i;
@@ -1709,8 +1732,10 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, uint64_t* preord
         }      
       }
     }
-  } 
+  }
 
+#pragma omp single
+{
   if(verbose){
     MPI_Barrier(MPI_COMM_WORLD);
     elt = timer() - elt;
@@ -1721,17 +1746,28 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, uint64_t* preord
     elt = timer();
   }
 
-  int32_t* sendcounts = new int32_t[nprocs];
-  int32_t* recvcounts = new int32_t[nprocs];
   for(int i = 0; i < nprocs; i++)sendcounts[i] = 0;
-  for(uint64_t i = 0; i < g->n_ghost; i++){
-    sendcounts[g->ghost_tasks[i]] += 3;
-  }
-  MPI_Alltoall(sendcounts, 1, MPI_INT32_T, recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
+  local_sendcounts = new int32_t*[tcount];
+}
 
-  int32_t* sdispls = new int32_t[nprocs];
-  int32_t* rdispls = new int32_t[nprocs];
-  int32_t* sdispls_cpy = new int32_t[nprocs];
+  local_sendcounts[tid] = new int32_t[nprocs];
+  for(int i = 0; i < nprocs; i++) local_sendcounts[tid][i] = 0;
+
+#pragma omp for schedule(static)
+  for(uint64_t i = 0; i < g->n_ghost; i++){
+    local_sendcounts[tid][g->ghost_tasks[i]] += 3;
+  }
+
+  for (int i = 0; i < nprocs; i++) {
+#pragma omp atomic
+    sendcounts[i] += local_sendcounts[tid][i];
+  }
+
+#pragma omp barrier
+
+#pragma omp single
+{
+  MPI_Alltoall(sendcounts, 1, MPI_INT32_T, recvcounts, 1, MPI_INT32_T, MPI_COMM_WORLD);
 
   sdispls[0] = 0;
   rdispls[0] = 0;
@@ -1742,22 +1778,35 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, uint64_t* preord
     sdispls_cpy[i] = sdispls[i];
   }
   
-  int32_t send_total = sdispls[nprocs-1] + sendcounts[nprocs-1];
-  int32_t recv_total = rdispls[nprocs-1] + recvcounts[nprocs-1];
+  send_total = sdispls[nprocs-1] + sendcounts[nprocs-1];
+  recv_total = rdispls[nprocs-1] + recvcounts[nprocs-1];
 
-  uint64_t* sendbuf = new uint64_t[send_total];
-  uint64_t* recvbuf = new uint64_t[recv_total];
+  sendbuf = new uint64_t[send_total];
+  recvbuf = new uint64_t[recv_total];
+}
 
+int offset = 0;
+#pragma omp single
   for(uint64_t i = 0; i < g->n_ghost; i++){
-    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = g->ghost_unmap[i];
-    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = final_labels[i+g->n_local];
-    sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = final_flags[i+g->n_local];
+#pragma omp atomic capture
+    { offset = sdispls_cpy[g->ghost_tasks[i]] ; sdispls_cpy[g->ghost_tasks[i]] += 3; }
+    sendbuf[offset] = g->ghost_unmap[i];
+    //sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = g->ghost_unmap[i];
+    sendbuf[offset+1] = final_labels[i+g->n_local];
+    //sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = final_labels[i+g->n_local];
+    sendbuf[offset+2] = final_flags[i+g->n_local];
+    //sendbuf[sdispls_cpy[g->ghost_tasks[i]]++] = final_flags[i+g->n_local];
   }
+
   //do a boundary exchange
+#pragma omp single
   MPI_Alltoallv(sendbuf,sendcounts, sdispls, MPI_UINT64_T, recvbuf, recvcounts, rdispls, MPI_UINT64_T, MPI_COMM_WORLD);
 
+#pragma omp barrier
+
+#pragma omp for
   for(int32_t i = 0; i< recv_total; i+=3){
-    int32_t lid = get_value(g->map, recvbuf[i]);
+    uint64_t lid = get_value(g->map, recvbuf[i]);
     if(recvbuf[i+1] != NULL_KEY){
       if(final_labels[lid] == NULL_KEY){
         final_labels[lid] = recvbuf[i+1];
@@ -1772,8 +1821,10 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, uint64_t* preord
     recvbuf[i+2] = final_flags[lid];
   }
 
+#pragma omp single
   MPI_Alltoallv(recvbuf, recvcounts, rdispls, MPI_UINT64_T, sendbuf, sendcounts, sdispls, MPI_UINT64_T, MPI_COMM_WORLD);
 
+#pragma omp for
   for(int i = 0; i < send_total; i+=3){
     uint64_t ghost_lid = get_value(g->map, sendbuf[i]);
     if(final_labels[ghost_lid] == NULL_KEY){
@@ -1785,6 +1836,8 @@ void finish_edge_labeling(dist_graph_t* g, dist_graph_t* aux_g, uint64_t* preord
 
     if(sendbuf[i+2] == 1) final_flags[ghost_lid] = 1;
   }
+
+}
 
   if(verbose){
     MPI_Barrier(MPI_COMM_WORLD);
