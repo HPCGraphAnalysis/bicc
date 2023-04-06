@@ -1,0 +1,1 @@
+Slota-Madurri Biconnectivity Components Coloring Algorithm - GPU Implementation
