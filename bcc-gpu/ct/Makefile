@@ -4,7 +4,7 @@ LINKFLAGS = -L/usr/local/cuda/lib64 -lcudart
 CUDA = nvcc
 CUDAFLAGS = -g -G -O0 -arch=sm_70
 TARGET = reduce
-TOCOMPILE = io.o graph.o util.o reduce.o main.o
+TOCOMPILE = graph.o util.o reduce.o main.o
 
 
 all: $(TOCOMPILE) 

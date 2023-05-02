@@ -8,7 +8,6 @@ using namespace std;
 #include <time.h> 
 
 #include "graph.h"
-#include "io.h"
 #include "reduce.h"
 
 long* global_map;

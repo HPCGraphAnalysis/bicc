@@ -88,7 +88,7 @@ int read_bin(char* filename,
   return 0;
 }
 
-int create_csr(int n, long m, int& max_degree, int& max_degree_vert,
+int create_csr(int n, long m, int& max_degree, int& max_degree_vert, double& avg_out_degree,
   int* srcs, int* dsts,
   int*& out_adjlist, long*& out_offsets)
 {
@@ -137,10 +137,12 @@ int create_csr(int n, long m, int& max_degree, int& max_degree_vert,
 
   max_degree = 0;
   max_degree_vert = 0;
+  avg_out_degree = 0.0;
 #pragma omp parallel for reduction(max:max_degree)
   for (long i = 0; i < n; ++i)
   {
     long degree = out_offsets[i+1] - out_offsets[i];
+    avg_out_degree += (double)degree;
     if (degree > max_degree) {
       max_degree = degree;
       max_degree_vert = i;
@@ -148,6 +150,8 @@ int create_csr(int n, long m, int& max_degree, int& max_degree_vert,
     
     quicksort(&out_adjlist[out_offsets[i]], 0, degree-1);
   }
+
+  avg_out_degree /= (double)n;
   if (verbose) printf("Done: %lf (s)\n", omp_get_wtime() - elt);
   
   return 0;
@@ -162,11 +166,12 @@ graph* create_graph(char* filename)
   long m;
   int max_degree;
   int max_degree_vert;
+  double avg_out_degree;
   int* out_adjlist;
   long* out_offsets;
 
   read_bin(filename, n, m, srcs, dsts);
-  create_csr(n, m, max_degree, max_degree_vert, srcs, dsts, out_adjlist, out_offsets);
+  create_csr(n, m, max_degree, max_degree_vert, avg_out_degree, srcs, dsts, out_adjlist, out_offsets);
   delete [] srcs;
   delete [] dsts;
 
@@ -175,6 +180,7 @@ graph* create_graph(char* filename)
   g->m = m;
   g->max_degree = max_degree;
   g->max_degree_vert = max_degree_vert;
+  g->avg_out_degree = avg_out_degree;
   g->out_adjlist = out_adjlist;
   g->out_offsets = out_offsets;
 

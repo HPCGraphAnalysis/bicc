@@ -6,6 +6,7 @@ struct graph {
   long m;
   long max_degree;
   long max_degree_vert;
+  double avg_out_degree;
   int* out_adjlist;
   long* out_offsets;
 } ;
@@ -16,7 +17,7 @@ int read_bin(char* filename,
  int& n, long& m,
  int*& srcs, int*& dsts);
 
-int create_csr(int n, long m, int& max_degree,
+int create_csr(int n, long m, int& max_degree, int& max_degree_vert,
   int* srcs, int* dsts,
   int*& out_adjlist, long*& out_offsets);
 

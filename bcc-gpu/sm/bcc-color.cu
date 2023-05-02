@@ -9,22 +9,37 @@
 extern int verbose;
 extern int debug;
 
-//**************************************************************************************************
-// Helper Functions
-//**************************************************************************************************
+/****************************************************************
 
+##     ## ######## ##       ########  ######## ########   ######  
+##     ## ##       ##       ##     ## ##       ##     ## ##    ## 
+##     ## ##       ##       ##     ## ##       ##     ## ##       
+######### ######   ##       ########  ######   ########   ######  
+##     ## ##       ##       ##        ##       ##   ##         ## 
+##     ## ##       ##       ##        ##       ##    ##  ##    ## 
+##     ## ######## ######## ##        ######## ##     ##  ######  
+
+*****************************************************************/
+
+/*
+Templated swap function for queues
+*/
 template <typename T> void swap(T* &p, T* &q) {
   T* tmp = p;
   p = q;
   q = tmp;
 }
 
+/*
+Kernel that adds vertex to the next queue if the in_queue_next flag was set for that vertex
+*/
 __global__
-void update_queue_next(graph* g, int* queue_next, int* queue_next_size, bool* in_queue_next) 
+void update_queue_next(graph* g, int* queue_next, int* queue_next_size, bool* in_queue, bool* in_queue_next) 
 {
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
   if (index < g->n) {
+    in_queue[index] = false;
     if (in_queue_next[index]) {
       int queue_index = atomicAdd(queue_next_size, 1);
       queue_next[queue_index] = index;
@@ -32,10 +47,21 @@ void update_queue_next(graph* g, int* queue_next, int* queue_next_size, bool* in
   }
 }
 
-//**************************************************************************************************
-// BFS
-//**************************************************************************************************
+/********************************************************************************************************************************************
 
+ ######  ########     ###    ##    ## ##    ## #### ##    ##  ######      ######## ########  ######## ########    ########  ########  ######  
+##    ## ##     ##   ## ##   ###   ## ###   ##  ##  ###   ## ##    ##        ##    ##     ## ##       ##          ##     ## ##       ##    ## 
+##       ##     ##  ##   ##  ####  ## ####  ##  ##  ####  ## ##              ##    ##     ## ##       ##          ##     ## ##       ##       
+ ######  ########  ##     ## ## ## ## ## ## ##  ##  ## ## ## ##   ####       ##    ########  ######   ######      ########  ######    ######  
+      ## ##        ######### ##  #### ##  ####  ##  ##  #### ##    ##        ##    ##   ##   ##       ##          ##     ## ##             ## 
+##    ## ##        ##     ## ##   ### ##   ###  ##  ##   ### ##    ##        ##    ##    ##  ##       ##          ##     ## ##       ##    ## 
+ ######  ##        ##     ## ##    ## ##    ## #### ##    ##  ######         ##    ##     ## ######## ########    ########  ##        ###### 
+
+********************************************************************************************************************************************/
+
+/*
+BFS Initialization Kernel
+*/
 __global__
 void bfs_init(graph* g, int* root, int* parents, int* levels, int* queue, int* queue_size)
 {
@@ -58,8 +84,11 @@ void bfs_init(graph* g, int* root, int* parents, int* levels, int* queue, int* q
   return;
 }
 
+/*
+Top Down BFS Iteration Kernel - Updates all neighbors of only queue vertices
+*/
 __global__
-void bfs_level(graph* g, int* parents, int* levels, int level, int* queue, int* queue_size, int* queue_next, int* queue_next_size, bool* in_queue, bool* in_queue_next) 
+void td_bfs_level(graph* g, int* parents, int* levels, int level, int* queue, int* queue_size, int* queue_next, int* queue_next_size, bool* in_queue, bool* in_queue_next) 
 {
   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
 
@@ -83,6 +112,39 @@ void bfs_level(graph* g, int* parents, int* levels, int level, int* queue, int* 
   }
 }
 
+/*
+Bottom Up BFS Iteration Kernel - Updates all vertices with first neighbor in prev level
+*/
+__global__
+void bu_bfs_level(graph* g, int* parents, int* levels, int level, int* queue, int* queue_size, int* queue_next, int* queue_next_size, bool* in_queue, bool* in_queue_next) 
+{
+  int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+  if (index < g->n) {
+    int vert = index;
+    int prev_level = level - 1;
+
+    if (levels[vert] < 0) {
+      int degree = out_degree(g, vert);
+      int* outs = out_adjs(g, vert);
+
+      for (int j = 0; j < degree; ++j) {
+        int out = outs[j];
+
+        if (levels[out] == prev_level) {
+          levels[vert] = level;
+          parents[vert] = out;
+          in_queue_next[vert] = true;
+          break;
+        }
+      }
+    }
+  }
+}
+
+/*
+Hybrid BFS - Generates spanning tree for G, switching between top-down and bottom-up based on next queue parameters
+*/
 void bcc_bfs(graph* g, int* root, int* parents, int* levels, int* queue, int* queue_size, int* queue_next, int* queue_next_size, bool* in_queue, bool* in_queue_next) 
 {
   double elt = omp_get_wtime();
@@ -91,36 +153,73 @@ void bcc_bfs(graph* g, int* root, int* parents, int* levels, int* queue, int* qu
   int thread_blocks_n = g->n / BLOCK_SIZE + 1;
   int init_queue_size = 0;
 
+  bool using_top_down = true;
+  bool already_switched = false;
+  if (debug) printf("\n\tStarting with top-down BFS\n");
+
   bfs_init<<<thread_blocks_n, BLOCK_SIZE>>>(g, root, parents, levels, queue, queue_size);
 
   cudaDeviceSynchronize();
 
   int level = 1;
   while (*queue_size) {    
-    bfs_level<<<thread_blocks_n, BLOCK_SIZE>>>(g, parents, levels, level, queue, queue_size, queue_next, queue_next_size, in_queue, in_queue_next);
+    // Run iteration of BFS
+    if (using_top_down) {
+      td_bfs_level<<<thread_blocks_n, BLOCK_SIZE>>>(g, parents, levels, level, queue, queue_size, queue_next, queue_next_size, in_queue, in_queue_next);
+      cudaDeviceSynchronize();
+    } else {
+      bu_bfs_level<<<thread_blocks_n, BLOCK_SIZE>>>(g, parents, levels, level, queue, queue_size, queue_next, queue_next_size, in_queue, in_queue_next);
+      cudaDeviceSynchronize();
+    }
+
+    // Update Next Queue
+    update_queue_next<<<thread_blocks_n, BLOCK_SIZE>>>(g, queue_next, queue_next_size, in_queue, in_queue_next);
     cudaDeviceSynchronize();
 
-    update_queue_next<<<thread_blocks_n, BLOCK_SIZE>>>(g, queue_next, queue_next_size, in_queue_next);
-    cudaDeviceSynchronize();
-
+    // Swap queues
     swap(queue, queue_next);
     swap(in_queue, in_queue_next);
-
     cudaMemcpy(queue_size, queue_next_size, sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(queue_next_size, &init_queue_size, sizeof(int), cudaMemcpyHostToDevice);
 
-    level++;
+    // Switch BFS type if necessary
+    if (!already_switched) {
+      int frontier_size = *queue_size;
+      if (using_top_down) {
+        double edges_frontier = (double)frontier_size * g->avg_out_degree;
+        double edges_remainder = (double)(g->n - frontier_size) * g->avg_out_degree; 
+        if ((edges_remainder / ALPHA) < edges_frontier && edges_remainder > 0) {
+          if (debug) printf("\tSwitching to bottom-up BFS on level %d\n", level);
+          using_top_down = false;
+        }
+      } else if (((double)g->n / BETA) > frontier_size){
+        if (debug) printf("\tSwitching back to top-down BFS on level %d\n", level);
+        using_top_down = false;
+        already_switched = true;
+      }
+    }
 
-    cudaDeviceSynchronize();
+    level++;
   }
 
   if (verbose) printf("Done: %lf (s)\n", omp_get_wtime() - elt);
 }
 
-//**************************************************************************************************
-// Mutual Parents
-//**************************************************************************************************
+/*****************************************************************************************************************************
 
+##     ## ##     ## ######## ##     ##    ###    ##          ########     ###    ########  ######## ##    ## ########  ######  
+###   ### ##     ##    ##    ##     ##   ## ##   ##          ##     ##   ## ##   ##     ## ##       ###   ##    ##    ##    ## 
+#### #### ##     ##    ##    ##     ##  ##   ##  ##          ##     ##  ##   ##  ##     ## ##       ####  ##    ##    ##       
+## ### ## ##     ##    ##    ##     ## ##     ## ##          ########  ##     ## ########  ######   ## ## ##    ##     ######  
+##     ## ##     ##    ##    ##     ## ######### ##          ##        ######### ##   ##   ##       ##  ####    ##          ## 
+##     ## ##     ##    ##    ##     ## ##     ## ##          ##        ##     ## ##    ##  ##       ##   ###    ##    ##    ## 
+##     ##  #######     ##     #######  ##     ## ########    ##        ##     ## ##     ## ######## ##    ##    ##     ######  
+
+******************************************************************************************************************************/
+
+/*
+Device function that runs DFS to find the mutual parent between vert and out
+*/
 __device__
 int mutual_parent(graph* g, int* levels, int* parents, int vert, int out)
 {
@@ -146,6 +245,9 @@ int mutual_parent(graph* g, int* levels, int* parents, int vert, int out)
   return p_vert;
 }
 
+/*
+Mutual Parent Cuda Kernel
+*/
 __global__
 void init_mutual_parent(graph* g, int* parents, int* levels, int* high, int* low, int* changes)
 {
@@ -182,6 +284,9 @@ void init_mutual_parent(graph* g, int* parents, int* levels, int* high, int* low
   }
 }
 
+/*
+Finds inital mutual parents for all vertices
+*/
 void bcc_find_mutual_parent(graph* g, int* parents, int* levels, int* high, int* low) 
 {
   double elt = omp_get_wtime();
@@ -203,10 +308,21 @@ void bcc_find_mutual_parent(graph* g, int* parents, int* levels, int* high, int*
   if (verbose) printf("Done: %lf (s)\n", omp_get_wtime() - elt);
 }
 
-//**************************************************************************************************
-// Color
-//**************************************************************************************************
+/***********************************************
 
+ ######   #######  ##        #######  ########  
+##    ## ##     ## ##       ##     ## ##     ## 
+##       ##     ## ##       ##     ## ##     ## 
+##       ##     ## ##       ##     ## ########  
+##       ##     ## ##       ##     ## ##   ##   
+##    ## ##     ## ##       ##     ## ##    ##  
+ ######   #######  ########  #######  ##     ## 
+
+***********************************************/
+
+/*
+Color Init - Add all vertices to queue
+*/
 __global__
 void color_init(graph* g, int* queue, int* queue_size)
 {
@@ -220,6 +336,9 @@ void color_init(graph* g, int* queue, int* queue_size)
   return;
 }
 
+/*
+Coloring Kernel - labels high and low for all vertices
+*/
 __global__
 void color_level(graph* g, int* parents, int* levels, int* high, int* low, 
                  int* queue, int* queue_size, int* queue_next, int* queue_next_size, 
@@ -266,6 +385,9 @@ void color_level(graph* g, int* parents, int* levels, int* high, int* low,
   }
 }
 
+/*
+Final coloring of all vertices based on initial mutual parents
+*/
 void bcc_color(graph* g, int* root, int* parents, int* levels, int* high, int* low,
                int* queue, int* queue_size, int* queue_next, int* queue_next_size, 
                bool* in_queue, bool* in_queue_next) 
@@ -277,19 +399,21 @@ void bcc_color(graph* g, int* root, int* parents, int* levels, int* high, int* l
   int init_queue_size = 0;
 
   color_init<<<thread_blocks_n, BLOCK_SIZE>>>(g, queue, queue_size);
-
   cudaDeviceSynchronize();
 
   int i = 0;
   while (*queue_size) {    
-    if (debug) printf("Iter: %d - queue_size: %d\n", i, *queue_size);
+    if (debug) printf("\tIter: %d - queue_size: %d\n", i, *queue_size);
 
+    // Apply coloring level
     color_level<<<thread_blocks_n, BLOCK_SIZE>>>(g, parents, levels, high, low, queue, queue_size, queue_next, queue_next_size, in_queue, in_queue_next);
     cudaDeviceSynchronize();
 
-    update_queue_next<<<thread_blocks_n, BLOCK_SIZE>>>(g, queue_next, queue_next_size, in_queue_next);
+    // Update next queue
+    update_queue_next<<<thread_blocks_n, BLOCK_SIZE>>>(g, queue_next, queue_next_size, in_queue, in_queue_next);
     cudaDeviceSynchronize();
 
+    // Swap queues
     swap(queue, queue_next);
     swap(in_queue, in_queue_next);
 
@@ -297,10 +421,9 @@ void bcc_color(graph* g, int* root, int* parents, int* levels, int* high, int* l
     cudaMemcpy(queue_next_size, &init_queue_size, sizeof(int), cudaMemcpyHostToDevice);
 
     i += 1;
-
-    cudaDeviceSynchronize();
   }
 
+  // Calculate high and low for the root
   int global_low = g->n;
   unsigned out_degree = out_degree(g, *root);
   int* outs = out_adjs(g, *root);
@@ -314,10 +437,21 @@ void bcc_color(graph* g, int* root, int* parents, int* levels, int* high, int* l
   if (verbose) printf("Done: %lf (s)\n", omp_get_wtime() - elt);
 }
 
-//**************************************************************************************************
-// Label
-//**************************************************************************************************
+/*********************************************
 
+##          ###    ########  ######## ##       
+##         ## ##   ##     ## ##       ##       
+##        ##   ##  ##     ## ##       ##       
+##       ##     ## ########  ######   ##       
+##       ######### ##     ## ##       ##       
+##       ##     ## ##     ## ##       ##       
+######## ##     ## ########  ######## ######## 
+
+*********************************************/
+
+/*
+Kernel to initialize articulation point array
+*/
 __global__
 void art_point_init(graph* g, bool* art_point)
 {
@@ -330,6 +464,9 @@ void art_point_init(graph* g, bool* art_point)
   return;
 }
 
+/*
+Kernel to update articulation point array
+*/
 __global__
 void art_point_set(graph* g, bool* art_point, int* high)
 {
@@ -342,6 +479,9 @@ void art_point_set(graph* g, bool* art_point, int* high)
   return;
 }
 
+/*
+Update art point for the root vertex
+*/
 void art_point_root(graph* g, bool* art_point, int* low, int* root) 
 {
   art_point[*root] = false;
@@ -356,6 +496,9 @@ void art_point_root(graph* g, bool* art_point, int* low, int* root)
   }
 }
 
+/*
+Kernel to count number of articulation points
+*/
 __global__
 void art_point_final(graph* g, bool* art_point, int* art_point_count)
 {
@@ -370,6 +513,9 @@ void art_point_final(graph* g, bool* art_point, int* art_point_count)
   return;
 }
 
+/*
+Kernel to intialize BCC assigned array for edges
+*/
 __global__
 void bcc_assigned_init(graph* g, bool* bcc_assigned)
 {
@@ -382,6 +528,9 @@ void bcc_assigned_init(graph* g, bool* bcc_assigned)
   return;
 }
 
+/*
+Kernel to count number of BCCs based on assigned array
+*/
 __global__
 void bcc_assigned_final(graph* g, bool* bcc_assigned, int* bcc_count)
 {
@@ -396,6 +545,9 @@ void bcc_assigned_final(graph* g, bool* bcc_assigned, int* bcc_count)
   return;
 }
 
+/*
+Kernel to label each vertex based on its associated BCC
+*/
 __global__
 void label(graph* g, int* high, int* low, int* bcc_maps, int* bcc_map_counter, bool* bcc_assigned) 
 {
@@ -426,6 +578,9 @@ void label(graph* g, int* high, int* low, int* bcc_maps, int* bcc_map_counter, b
   }
 }
 
+/*
+Labels all vertices and all edges based on the BCC found in coloring
+*/
 void bcc_label(graph* g, int* root, int* high, int* low, int* bcc_maps, int* bcc_map_counter, 
                bool* art_point, bool* bcc_assigned, int* art_point_count, int* bcc_count) 
 {
@@ -458,11 +613,19 @@ void bcc_label(graph* g, int* root, int* high, int* low, int* bcc_maps, int* bcc
   if (verbose) printf("Done: %lf (s)\n", omp_get_wtime() - elt);
 }
 
-//**************************************************************************************************
-// Main
-//**************************************************************************************************
+/********************************
 
-int bcc_color_decomposition(graph* g_h, int* bcc_maps_h, int& bcc_count_h, int& art_point_count_h) {
+##     ##    ###    #### ##    ## 
+###   ###   ## ##    ##  ###   ## 
+#### ####  ##   ##   ##  ####  ## 
+## ### ## ##     ##  ##  ## ## ## 
+##     ## #########  ##  ##  #### 
+##     ## ##     ##  ##  ##   ### 
+##     ## ##     ## #### ##    ##
+
+********************************/
+
+void bcc_color_decomposition(graph* g_h, int* bcc_maps_h, int& bcc_count_h, int& art_point_count_h) {
   double elt = omp_get_wtime();
   if (verbose) printf("Initializing data on GPU .... ");
   
@@ -471,6 +634,9 @@ int bcc_color_decomposition(graph* g_h, int* bcc_maps_h, int& bcc_count_h, int& 
   assert(cudaMallocManaged(&g, sizeof(graph)) == cudaSuccess);
   cudaMemcpy(&g->n, &g_h->n, sizeof(int), cudaMemcpyHostToDevice);
   cudaMemcpy(&g->m, &g_h->m, sizeof(long), cudaMemcpyHostToDevice);
+  cudaMemcpy(&g->max_degree, &g_h->max_degree, sizeof(long), cudaMemcpyHostToDevice);
+  cudaMemcpy(&g->max_degree_vert, &g_h->max_degree_vert, sizeof(long), cudaMemcpyHostToDevice);
+  cudaMemcpy(&g->avg_out_degree, &g_h->avg_out_degree, sizeof(double), cudaMemcpyHostToDevice);
 
   int num_verts = g_h->n;
   int num_edges = g_h->m;
@@ -578,7 +744,7 @@ int bcc_color_decomposition(graph* g_h, int* bcc_maps_h, int& bcc_count_h, int& 
   // *********************************************************************************
   bcc_label(g, root, high, low, bcc_maps, bcc_map_counter, art_point, bcc_assigned, art_point_count, bcc_count);
 
-  if (verbose) printf("BCC-Color Runtime w/o GPU Overhead: %lf (s)\n\n", omp_get_wtime() - elt);
+  if (verbose) printf("\nBCC-Color Runtime w/o GPU Overhead: %lf (s)\n", omp_get_wtime() - elt);
 
   // *********************************************************************************
   // copy results back to host memory
@@ -617,6 +783,4 @@ int bcc_color_decomposition(graph* g_h, int* bcc_maps_h, int& bcc_count_h, int& 
   cudaFree(queue_next_size);
   cudaFree(in_queue);
   cudaFree(in_queue_next);
-
-  return 1;
 }

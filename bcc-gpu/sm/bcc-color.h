@@ -5,6 +5,10 @@
 
 #define BLOCK_SIZE 512
 
-int bcc_color_decomposition(graph* g_host, int* bcc_maps, int& bcc_count, int& art_vert_count);
+#define ALPHA 15
+#define BETA 24
+
+
+void bcc_color_decomposition(graph* g_host, int* bcc_maps, int& bcc_count, int& art_vert_count);
 
 #endif
